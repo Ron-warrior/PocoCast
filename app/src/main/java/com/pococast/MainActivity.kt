@@ -1,15 +1,23 @@
 package com.pococast
 
 import android.app.Activity
-import android.app.AlertDialog
+import android.app.Dialog
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
+import android.text.InputFilter
 import android.text.InputType
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
-import android.widget.Button
+import android.view.Window
+import android.view.WindowManager
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import com.airsonic.sender.api.AirDevice
@@ -22,86 +30,359 @@ class MainActivity : Activity() {
     private val worker = Executors.newSingleThreadExecutor()
     private val cast = CastController()
 
-    private lateinit var status: TextView
+    private lateinit var skin: Skin
+    private lateinit var statusText: TextView
+    private lateinit var statusSpinner: ProgressBar
     private lateinit var deviceBox: LinearLayout
     private lateinit var link: EditText
-    private lateinit var castButton: Button
+    private lateinit var castButton: TextView
+    private lateinit var stopButton: TextView
 
     private var selected: AirDevice? = null
+    private var busy = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        skin = Skin(this)
 
-        val root = LinearLayout(this).apply {
+        val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        page.addView(buildHeader())
+        page.addView(
+            View(this).apply { setBackgroundColor(skin.cyan) },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(4))
+        )
+
+        val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(56, 72, 56, 48)
+            setPadding(dp(20), dp(20), dp(20), dp(30))
         }
-        root.addView(TextView(this).apply {
-            text = "PocoCast"
-            textSize = 28f
-            setTextColor(Color.parseColor("#111111"))
-        })
-        root.addView(TextView(this).apply {
-            text = "Cast links and YouTube to an Apple TV over AirPlay."
-            textSize = 14f
-            setPadding(0, 8, 0, 24)
-        })
+        page.addView(body)
 
-        status = TextView(this).apply {
-            text = "Looking for Apple TVs…"
-            textSize = 15f
-            setPadding(0, 16, 0, 16)
-        }
-
-        root.addView(Button(this).apply {
-            text = "Find Apple TVs"
-            setOnClickListener { discover() }
-        })
-
+        body.addView(sectionRow("Choose a screen", miniButton("Refresh") { discover() }))
         deviceBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(deviceBox)
+        body.addView(deviceBox, matchWrap(top = 10))
 
-        root.addView(TextView(this).apply {
-            text = "Video or YouTube link"
-            textSize = 14f
-            setPadding(0, 28, 0, 6)
+        body.addView(buildStatusCard(), matchWrap(top = 14))
+
+        body.addView(sectionRow("Or paste a link"), matchWrap(top = 24))
+        body.addView(buildInputCard(), matchWrap(top = 8))
+        body.addView(buildSourceTags(), matchWrap(top = 10))
+        body.addView(buildButtons(), matchWrap(top = 18))
+
+        body.addView(
+            label(
+                "The first cast shows a 4-digit PIN on the TV. After that PocoCast reconnects on its own.",
+                11.5f,
+                skin.muted
+            ).apply { setLineSpacing(dp(3).toFloat(), 1f) },
+            matchWrap(top = 14)
+        )
+
+        setContentView(ScrollView(this).apply {
+            setBackgroundColor(skin.paper)
+            isFillViewport = true
+            addView(page)
         })
-        link = EditText(this).apply {
-            hint = "https://youtube.com/watch?v=… or a stream URL"
-            inputType = InputType.TYPE_TEXT_VARIATION_URI
-        }
-        root.addView(link, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ))
 
-        castButton = Button(this).apply {
-            text = "Cast"
-            setOnClickListener {
-                val url = link.text.toString().trim()
-                if (url.isEmpty()) say("Paste a link first.") else startCast(url)
-            }
-        }
-        root.addView(castButton)
-        root.addView(Button(this).apply {
-            text = "Stop"
-            setOnClickListener { worker.execute { cast.stop(); say("Stopped.") } }
-        })
-        root.addView(status.also { root.removeView(it) })
-
-        setContentView(ScrollView(this).apply { addView(root) })
-
+        showDevices()
         discover()
 
         if (intent?.action == Intent.ACTION_SEND) {
             val shared = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim().orEmpty()
             if (shared.isNotEmpty()) {
                 link.setText(shared)
-                say("Shared link received — pick an Apple TV, then tap Cast.")
+                say("Link received — pick a screen, then tap Cast.")
             }
         }
     }
 
+    // ---- layout ----
+
+    private fun buildHeader(): View {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = gradient(
+                skin.color(R.color.navy),
+                skin.color(R.color.navy_mid),
+                skin.color(R.color.navy_end)
+            )
+            setPadding(dp(22), dp(26), dp(22), dp(22))
+        }
+
+        val brand = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        brand.addView(
+            label("PC", 14f, skin.color(R.color.cyan), medium = true).apply {
+                gravity = Gravity.CENTER
+                letterSpacing = 0.06f
+                background = rounded(
+                    0x14FFFFFF,
+                    dp(12).toFloat(),
+                    skin.color(R.color.cyan),
+                    dp(1.5).toFloat()
+                )
+            },
+            LinearLayout.LayoutParams(dp(46), dp(46))
+        )
+        val words = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), 0, 0, 0)
+        }
+        words.addView(label("PocoCast", 21f, skin.color(R.color.on_navy), medium = true))
+        words.addView(
+            label("Phone → Apple TV, over AirPlay", 12.5f, skin.color(R.color.on_navy_muted)).apply {
+                setPadding(0, dp(3), 0, 0)
+            }
+        )
+        brand.addView(words)
+        box.addView(brand)
+
+        val meta = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(18), 0, 0)
+        }
+        listOf("AirPlay 2", "1080p", "Ad-free").forEach { text ->
+            meta.addView(
+                label(text.uppercase(), 9f, skin.color(R.color.on_navy_meta), medium = true).apply {
+                    letterSpacing = 0.12f
+                    setPadding(dp(9), dp(5), dp(9), dp(5))
+                    background = rounded(
+                        0x0FFFFFFF,
+                        dp(999).toFloat(),
+                        0x24FFFFFF,
+                        dp(1).toFloat()
+                    )
+                },
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { marginEnd = dp(6) }
+            )
+        }
+        box.addView(meta)
+        return box
+    }
+
+    private fun sectionRow(title: String, action: View? = null): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        row.addView(label(title.uppercase(), 10f, skin.muted, medium = true).apply {
+            letterSpacing = 0.14f
+        })
+        if (action != null) {
+            row.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+            row.addView(action)
+        }
+        return row
+    }
+
+    private fun buildStatusCard(): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = rounded(skin.card, dp(12).toFloat(), skin.line, dp(1).toFloat())
+            clipToOutline = true
+            elevation = dp(2).toFloat()
+        }
+        row.addView(
+            View(this).apply { setBackgroundColor(skin.cyan) },
+            LinearLayout.LayoutParams(dp(4), ViewGroup.LayoutParams.MATCH_PARENT)
+        )
+        val inner = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(13), dp(14), dp(13))
+        }
+        statusText = label("Looking for Apple TVs…", 13.5f, skin.ink).apply {
+            setLineSpacing(dp(3).toFloat(), 1f)
+        }
+        inner.addView(
+            statusText,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        statusSpinner = ProgressBar(this, null, android.R.attr.progressBarStyleSmall).apply {
+            indeterminateTintList = ColorStateList.valueOf(skin.cyan)
+            visibility = View.GONE
+        }
+        inner.addView(
+            statusSpinner,
+            LinearLayout.LayoutParams(dp(18), dp(18)).apply { marginStart = dp(10) }
+        )
+        row.addView(
+            inner,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        return row
+    }
+
+    private fun buildInputCard(): View {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = rounded(skin.card, dp(12).toFloat(), skin.line, dp(1).toFloat())
+            setPadding(dp(14), 0, dp(14), 0)
+            elevation = dp(2).toFloat()
+        }
+        link = EditText(this).apply {
+            hint = "youtube.com/watch?v=…  ·  stream URL"
+            setHintTextColor(skin.muted)
+            setTextColor(skin.ink)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15.5f)
+            inputType = InputType.TYPE_TEXT_VARIATION_URI
+            background = null
+            setPadding(0, dp(14), 0, dp(14))
+            maxLines = 2
+        }
+        card.addView(
+            link,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        return card
+    }
+
+    private fun buildSourceTags(): View {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf("YouTube · 1080p", "Nuvio link", "HLS / MP4").forEach { text ->
+            row.addView(
+                label(text.uppercase(), 9f, skin.muted, medium = true).apply {
+                    letterSpacing = 0.12f
+                    setPadding(dp(9), dp(5), dp(9), dp(5))
+                    background = rounded(
+                        skin.color(R.color.chip),
+                        dp(999).toFloat(),
+                        skin.line,
+                        dp(1).toFloat()
+                    )
+                },
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { marginEnd = dp(6) }
+            )
+        }
+        return row
+    }
+
+    private fun buildButtons(): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        castButton = cta("Cast to Apple TV", primary = true) {
+            val url = link.text.toString().trim()
+            if (url.isEmpty()) say("Paste a link first.") else startCast(url)
+        }
+        row.addView(castButton, LinearLayout.LayoutParams(0, dp(52), 1f))
+
+        stopButton = cta("Stop", primary = false) { stopCasting() }
+        row.addView(
+            stopButton,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(52))
+                .apply { marginStart = dp(10) }
+        )
+        return row
+    }
+
+    private fun deviceCard(device: AirDevice, chosen: Boolean): View {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = ripple(
+                rounded(
+                    if (chosen) skin.color(R.color.card_selected) else skin.card,
+                    dp(12).toFloat(),
+                    if (chosen) skin.cyan else skin.line,
+                    dp(1).toFloat()
+                ),
+                skin.color(R.color.ripple)
+            )
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+            elevation = dp(2).toFloat()
+            isClickable = true
+            isFocusable = true
+        }
+
+        card.addView(
+            View(this).apply {
+                background = if (chosen) circle(skin.cyan) else circle(
+                    0x00000000,
+                    skin.color(R.color.line_strong),
+                    dp(1.5).toFloat()
+                )
+            },
+            LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(12) }
+        )
+
+        val words = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        words.addView(label(device.name, 15f, skin.ink, medium = true))
+        words.addView(label(device.host, 12f, skin.muted).apply { setPadding(0, dp(3), 0, 0) })
+        card.addView(
+            words,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+
+        if (chosen) {
+            card.addView(label("Selected", 9f, skin.cyanInk, medium = true).apply {
+                letterSpacing = 0.12f
+                setPadding(dp(8), dp(4), dp(8), dp(4))
+                background = rounded(skin.color(R.color.cyan_soft), dp(999).toFloat())
+            })
+        }
+
+        card.setOnClickListener {
+            selected = device
+            showDevices()
+            say("Selected ${device.name}")
+        }
+        return card
+    }
+
+    private fun miniButton(text: String, onClick: () -> Unit): TextView =
+        label(text, 12f, skin.muted, medium = true).apply {
+            setPadding(dp(12), dp(7), dp(12), dp(7))
+            background = ripple(
+                rounded(skin.card, dp(999).toFloat(), skin.line, dp(1).toFloat()),
+                skin.color(R.color.ripple)
+            )
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { onClick() }
+        }
+
+    private fun cta(text: String, primary: Boolean, onClick: () -> Unit): TextView {
+        val fill = if (primary) skin.color(R.color.cta) else Color.TRANSPARENT
+        val stroke = if (primary) fill else skin.line
+        return label(
+            text,
+            15f,
+            if (primary) skin.color(R.color.cta_text) else skin.ink,
+            medium = true
+        ).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(18), 0, dp(18), 0)
+            background = ripple(
+                rounded(fill, dp(12).toFloat(), stroke, dp(1).toFloat()),
+                skin.color(if (primary) R.color.ripple_cta else R.color.ripple)
+            )
+            isClickable = true
+            isFocusable = true
+            if (primary) elevation = dp(3).toFloat()
+            setOnClickListener { onClick() }
+        }
+    }
+
+    private fun matchWrap(top: Int = 0) = LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.WRAP_CONTENT
+    ).apply { topMargin = dp(top) }
+
+    // ---- discovery ----
+
     private fun discover() {
+        say("Looking for Apple TVs…")
         cast.startDiscovery(
             this,
             onChanged = { runOnUiThread { showDevices() } },
@@ -111,71 +392,171 @@ class MainActivity : Activity() {
 
     private fun showDevices() {
         deviceBox.removeAllViews()
-        if (cast.devices.isEmpty()) {
-            deviceBox.addView(TextView(this).apply {
-                text = "No Apple TVs yet. Same Wi-Fi, and AirPlay on in the TV settings."
-                textSize = 13f
-            })
+        val found = cast.devices
+        if (found.isEmpty()) {
+            deviceBox.addView(
+                label(
+                    "No Apple TVs yet.\nSame Wi-Fi as the TV, and AirPlay switched on in its settings.",
+                    13f,
+                    skin.muted
+                ).apply {
+                    gravity = Gravity.CENTER
+                    setLineSpacing(dp(4).toFloat(), 1f)
+                    setPadding(dp(18), dp(22), dp(18), dp(22))
+                    background = rounded(
+                        skin.card,
+                        dp(12).toFloat(),
+                        skin.color(R.color.line_strong),
+                        dashed = true
+                    )
+                },
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
             return
         }
-        if (selected == null) selected = cast.devices.first()
-        for (device in cast.devices) {
-            val chosen = selected?.id == device.id
-            deviceBox.addView(Button(this).apply {
-                text = (if (chosen) "● " else "○ ") + device.name + "  ·  " + device.host
-                setOnClickListener { selected = device; showDevices(); say("Selected ${device.name}") }
-            })
+
+        if (selected == null || found.none { it.id == selected?.id }) selected = found.first()
+        found.forEachIndexed { index, device ->
+            deviceBox.addView(
+                deviceCard(device, selected?.id == device.id),
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = if (index == 0) 0 else dp(8) }
+            )
         }
     }
 
+    // ---- casting ----
+
     private fun startCast(raw: String) {
         val target = selected ?: return say("Pick an Apple TV first.")
-        castButton.isEnabled = false
+        if (busy) return
+        setBusy(true)
         say("Connecting to ${target.name}…")
         worker.execute {
             try {
-                cast.cast(
-                    context = this,
-                    target = target,
-                    raw = raw,
-                    say = { message -> say(message) },
-                    askPin = { askPinBlocking() }
-                )
-                say("Sent to ${target.name}. If the TV shows nothing, the stream URL was refused.")
+                cast.cast(this, target, raw, { message -> say(message) }, { askPinBlocking() })
+                say("Sent to ${target.name}. If the TV stays black, it refused the stream URL.")
             } catch (t: Throwable) {
                 say("Failed: " + (t.message ?: t.javaClass.simpleName))
             } finally {
-                runOnUiThread { castButton.isEnabled = true }
+                runOnUiThread { setBusy(false) }
             }
         }
+    }
+
+    private fun stopCasting() {
+        if (busy) return
+        worker.execute {
+            cast.stop()
+            runOnUiThread { say("Stopped.") }
+        }
+    }
+
+    private fun setBusy(value: Boolean) {
+        busy = value
+        castButton.isEnabled = !value
+        castButton.alpha = if (value) 0.55f else 1f
+        castButton.text = if (value) "Casting…" else "Cast to Apple TV"
+        stopButton.alpha = if (value) 0.55f else 1f
+        statusSpinner.visibility = if (value) View.VISIBLE else View.GONE
     }
 
     /** Runs on the worker thread; blocks until the dialog is answered. */
     private fun askPinBlocking(): String? {
         val latch = CountDownLatch(1)
         var pin: String? = null
+
         runOnUiThread {
+            val dialog = Dialog(this)
+            dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(22), dp(22), dp(22), dp(16))
+                background = rounded(skin.card, dp(18).toFloat(), skin.line, dp(1).toFloat())
+            }
+            card.addView(
+                label("APPLE TV", 9.5f, skin.cyanInk, medium = true).apply { letterSpacing = 0.16f }
+            )
+            card.addView(
+                label("Enter the PIN", 21f, skin.ink, medium = true).apply {
+                    setPadding(0, dp(8), 0, 0)
+                }
+            )
+            card.addView(
+                label("Your TV is showing a 4-digit code.", 13f, skin.muted).apply {
+                    setPadding(0, dp(6), 0, 0)
+                }
+            )
+
             val input = EditText(this).apply {
                 inputType = InputType.TYPE_CLASS_NUMBER
-                hint = "1234"
+                filters = arrayOf(InputFilter.LengthFilter(4))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+                setTextColor(skin.ink)
+                gravity = Gravity.CENTER
+                letterSpacing = 0.35f
+                hint = "0000"
+                setHintTextColor(skin.color(R.color.line_strong))
+                background = rounded(skin.paper, dp(12).toFloat(), skin.line, dp(1).toFloat())
+                setPadding(dp(12), dp(10), dp(12), dp(10))
             }
-            AlertDialog.Builder(this)
-                .setTitle("Apple TV PIN")
-                .setMessage("Type the 4-digit code shown on the TV.")
-                .setView(input)
-                .setPositiveButton("Pair") { _, _ ->
+            card.addView(
+                input,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(16) }
+            )
+
+            val actions = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.END
+                setPadding(0, dp(16), 0, 0)
+            }
+            actions.addView(
+                cta("Cancel", primary = false) {
+                    latch.countDown()
+                    dialog.dismiss()
+                },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(44))
+            )
+            actions.addView(
+                cta("Pair", primary = true) {
                     pin = input.text.toString().trim()
                     latch.countDown()
-                }
-                .setNegativeButton("Cancel") { _, _ -> latch.countDown() }
-                .setOnCancelListener { latch.countDown() }
-                .show()
+                    dialog.dismiss()
+                },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(44))
+                    .apply { marginStart = dp(8) }
+            )
+            card.addView(actions)
+
+            dialog.setContentView(card)
+            dialog.setCanceledOnTouchOutside(false)
+            dialog.setOnCancelListener { latch.countDown() }
+            dialog.show()
+            dialog.window?.apply {
+                setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+                setLayout(
+                    resources.displayMetrics.widthPixels - dp(48),
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+                setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+            }
+            input.requestFocus()
         }
+
         latch.await(120, TimeUnit.SECONDS)
         return pin
     }
 
     private fun say(message: String) {
-        runOnUiThread { status.text = message }
+        runOnUiThread { statusText.text = message }
     }
 }
