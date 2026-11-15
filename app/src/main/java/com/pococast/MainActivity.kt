@@ -451,11 +451,10 @@ class MainActivity : Activity() {
                 say("Sent to ${target.name}. If the TV stays black, it refused the stream URL.")
             } catch (t: Throwable) {
                 Diag.error("cast failed", t)
-                val report = runCatching { Diag.writeReport(this@MainActivity, cast.about()) }.getOrNull()
-                lastReport = report
+                val saved = saveReport()
                 say(
                     "Failed: " + (t.message ?: t.javaClass.simpleName) +
-                        if (report != null) " — diagnostics saved; tap Export diagnostics to send them." else ""
+                        if (saved != null) " — log saved to $saved" else " — log could not be saved"
                 )
             } finally {
                 runOnUiThread { setBusy(false) }
@@ -570,17 +569,21 @@ class MainActivity : Activity() {
         return pin
     }
 
+    /** Writes the report into Downloads; returns the visible path, or null. */
+    private fun saveReport(): String? {
+        val file = runCatching { Diag.writeReport(this, cast.about()) }.getOrNull() ?: return null
+        lastReport = file
+        return Diag.saveToDownloads(this, file)
+    }
+
     private fun exportDiagnostics() {
-        val file = runCatching { Diag.writeReport(this, cast.about()) }.getOrNull()
-        if (file == null) {
-            say("Could not write a diagnostics file.")
+        val saved = saveReport()
+        if (saved == null) {
+            say("Could not write the diagnostics file.")
             return
         }
-        lastReport = file
-        Diag.log("ui: diagnostics written to " + file.name)
-        say("Diagnostics saved: " + file.name)
-        runCatching { Diag.share(this, file) }
-            .onFailure { say("Saved to " + file.absolutePath) }
+        Diag.log("ui: diagnostics saved to " + saved)
+        say("Saved to $saved")
     }
 
     private fun say(message: String) {

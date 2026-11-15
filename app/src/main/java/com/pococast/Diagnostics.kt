@@ -1,13 +1,13 @@
 package com.pococast
 
-import android.content.ClipData
+import android.content.ContentValues
 import android.content.Context
-import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
+import android.os.Environment
 import android.os.Process
-import androidx.core.content.FileProvider
+import android.provider.MediaStore
 import java.io.File
 import java.net.NetworkInterface
 import java.text.SimpleDateFormat
@@ -68,17 +68,29 @@ object Diag {
         return file
     }
 
-    fun share(context: Context, file: File) {
-        val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
-        val send = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "PocoCast diagnostics")
-            putExtra(Intent.EXTRA_STREAM, uri)
-            clipData = ClipData.newRawUri("PocoCast diagnostics", uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    /**
+     * Copies the report into the phone's Downloads folder through MediaStore,
+     * so it is visible in the Files app without any storage permission.
+     * Returns the visible path, or null if the copy failed.
+     */
+    fun saveToDownloads(context: Context, file: File): String? = runCatching {
+        val resolver = context.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, file.name)
+            put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            put(MediaStore.Downloads.IS_PENDING, 1)
         }
-        context.startActivity(Intent.createChooser(send, "Send PocoCast diagnostics"))
-    }
+        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val uri = resolver.insert(collection, values) ?: return null
+        resolver.openOutputStream(uri)?.use { out ->
+            file.inputStream().use { input -> input.copyTo(out) }
+        } ?: return null
+        values.clear()
+        values.put(MediaStore.Downloads.IS_PENDING, 0)
+        resolver.update(uri, values, null, null)
+        Environment.DIRECTORY_DOWNLOADS + "/" + file.name
+    }.getOrNull()
 
     // ---- report ----
 
