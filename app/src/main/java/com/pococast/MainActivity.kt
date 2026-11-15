@@ -514,6 +514,25 @@ class MainActivity : Activity() {
                     }
                 }
 
+                // A current tvOS answers 403 to /play until the connection has
+                // completed HomeKit pairing, so that always comes first.
+                if (!active.isPaired) {
+                    setStatus("Pairing with " + (targetName ?: host) + "…")
+                    val pairing = try {
+                        active.pair()
+                    } catch (error: Throwable) {
+                        null
+                    }
+                    if (pairing == null || pairing.code != 200) {
+                        setStatus(
+                            "The Apple TV refused pairing" +
+                                (if (pairing != null) " (" + pairing.code + " " + pairing.statusText + ")" else "") +
+                                ". On the TV open Settings > AirPlay and HomeKit, set Allow Access to " +
+                                "\"Anyone on the Same Network\", and turn Require Password off."
+                        )
+                    }
+                }
+
                 var response = active.play(url)
                 if (response.code != 200) {
                     Thread.sleep(700)
@@ -529,7 +548,11 @@ class MainActivity : Activity() {
                 if (playing) {
                     setStatus("Playback started on " + (targetName ?: host) + ".")
                 } else {
-                    setStatus("AirPlay refused the request (" + response.code + " " + response.statusText + ").")
+                    setStatus(
+                        "AirPlay refused the request (" + response.code + " " + response.statusText + "). " +
+                            "The video is being served at $url — a player app on the TV can open that " +
+                            "address directly while this is worked out."
+                    )
                 }
             } catch (cancelled: CancelledException) {
                 playing = false

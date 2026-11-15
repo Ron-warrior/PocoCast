@@ -143,6 +143,14 @@ and "Allow Others to AirPlay" (or the equivalent "Anyone on the Same Network"
 option) is enabled. Both devices must be on the same Wi-Fi network and the
 network must not isolate clients from each other. A guest network usually does.
 
+PocoCast completes AirPlay's HomeKit pairing exchange before it asks the TV to
+play anything, because a current tvOS answers `403 Forbidden` to a play request
+that arrives on an unpaired connection — which is exactly what this app did
+until that exchange was implemented. The exchange uses AirPlay's fixed transient
+PIN, so nothing appears on screen and nothing has to be typed. If the TV is set
+to require a password, or Allow Access is anything other than "Anyone on the
+Same Network", pairing is refused and the status line says so.
+
 ## Using it
 
 1. Open the app. Tap **Find Apple TVs**; the Apple TV shows up within a few

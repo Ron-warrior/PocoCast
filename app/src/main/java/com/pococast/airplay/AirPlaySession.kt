@@ -6,22 +6,26 @@ import java.io.IOException
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.security.SecureRandom
 import java.util.Locale
 import java.util.UUID
 
 /**
  * A very small AirPlay "video sender" speaking to an Apple TV on port 7000.
  *
- * The Apple TV plays the URL we hand it. The requests mimic what other open
- * source senders do: an RTSP style POST /play with a binary plist body, and a
- * fallback to the older plain HTTP variant with the URL in a header.
+ * The Apple TV plays the URL we hand it. Before it will, the connection has to
+ * complete HomeKit transient pairing — without it a current tvOS answers 403 to
+ * every play request — so [pair] runs first. The requests themselves mimic what
+ * other open source senders do: an RTSP style POST /play with a binary plist
+ * body, and a fallback to the older plain HTTP variant with the URL in a header.
  */
 class AirPlaySession(val address: String, val port: Int = 7000) {
 
     data class Response(
         val code: Int,
         val statusText: String,
-        val headers: Map<String, String>
+        val headers: Map<String, String>,
+        val body: ByteArray = ByteArray(0)
     )
 
     private var socket: Socket? = null
@@ -30,6 +34,11 @@ class AirPlaySession(val address: String, val port: Int = 7000) {
     private var cseq = 0
     private var sessionHeader: String? = null
     private val clientSessionId: String = UUID.randomUUID().toString()
+    private val pairingUsername: String = hexOf(SecureRandom().generateSeed(32))
+
+    /** Whether the pairing exchange has already succeeded on this connection. */
+    var isPaired: Boolean = false
+        private set
 
     fun info(): String = "$address:$port (session ${clientSessionId.take(8)})"
 
@@ -65,6 +74,12 @@ class AirPlaySession(val address: String, val port: Int = 7000) {
     @Synchronized
     fun playLegacy(url: String): Response {
         close()
+        // A fresh connection is an unpaired one, and the TV would answer 403
+        // again, so the pairing exchange is repeated before the retry.
+        try {
+            pair()
+        } catch (ignored: Throwable) {
+        }
         return request(
             "POST", "/play", null, false,
             "User-Agent" to "MediaControl/1.0",
@@ -74,6 +89,69 @@ class AirPlaySession(val address: String, val port: Int = 7000) {
             "X-Apple-Session-ID" to clientSessionId
         )
     }
+
+    /**
+     * Performs HomeKit transient pairing on this connection.
+     *
+     * AirPlay's transient form uses a fixed PIN, so this needs nothing from the
+     * user: the Apple TV publishes a salt and its SRP public key, both sides
+     * derive the same secret, and the device accepts `/play` afterwards. If the
+     * Apple TV's access control is set to require a password, the exchange is
+     * refused instead and the reply carries an error.
+     */
+    @Synchronized
+    fun pair(): Response {
+        post("/pair-pin-start", ByteArray(0))
+
+        val opening = HapTlv.decode(
+            post(
+                "/pair-setup",
+                HapTlv.encode(
+                    HapTlv.METHOD to byteArrayOf(0x00),
+                    HapTlv.SEQ_NO to byteArrayOf(0x01),
+                    HapTlv.FLAGS to byteArrayOf(0x10)
+                )
+            ).body
+        )
+        val salt = opening[HapTlv.SALT]
+            ?: throw IOException("the Apple TV did not offer a pairing salt")
+        val serverKey = opening[HapTlv.PUBLIC_KEY]
+            ?: throw IOException("the Apple TV did not offer a pairing key")
+
+        val srp = Srp.client(pairingUsername, TRANSIENT_PIN, salt, serverKey)
+
+        val finished = post(
+            "/pair-setup",
+            HapTlv.encode(
+                HapTlv.SEQ_NO to byteArrayOf(0x03),
+                HapTlv.PUBLIC_KEY to srp.clientPublic,
+                HapTlv.PROOF to srp.proof
+            )
+        )
+
+        // The TV can answer 200 while carrying a TLV error, which would leave
+        // the next play request refused with no explanation.
+        val failure = HapTlv.decode(finished.body)[HapTlv.ERROR]
+        if (failure != null && failure.isNotEmpty()) {
+            isPaired = false
+            throw IOException(
+                "the Apple TV rejected the pairing proof (error " +
+                    (failure[0].toInt() and 0xFF) + ")"
+            )
+        }
+
+        isPaired = finished.code == 200
+        return finished
+    }
+
+    /** A pairing step, which is plain HTTP rather than RTSP. */
+    private fun post(path: String, body: ByteArray): Response = request(
+        "POST", path, body, false,
+        "User-Agent" to "AirPlay/320.20",
+        "Connection" to "keep-alive",
+        "X-Apple-HKP" to "4",
+        "Content-Type" to "application/octet-stream"
+    )
 
     @Synchronized
     fun rate(value: Double): Response =
@@ -96,6 +174,7 @@ class AirPlaySession(val address: String, val port: Int = 7000) {
         input = null
         output = null
         sessionHeader = null
+        isPaired = false
     }
 
     private fun format(value: Double): String = String.format(Locale.US, "%.3f", value)
@@ -160,17 +239,32 @@ class AirPlaySession(val address: String, val port: Int = 7000) {
         headers["session"]?.let { sessionHeader = it }
 
         val length = headers["content-length"]?.toIntOrNull() ?: 0
+        val body = ByteArray(maxOf(0, length))
         if (length > 0) {
-            var remaining = length
-            val buffer = ByteArray(8192)
-            while (remaining > 0) {
-                val read = stream.read(buffer, 0, minOf(buffer.size, remaining))
+            var filled = 0
+            while (filled < length) {
+                val read = stream.read(body, filled, length - filled)
                 if (read <= 0) break
-                remaining -= read
+                filled += read
             }
         }
 
-        return Response(code, statusText, headers)
+        return Response(code, statusText, headers, body)
+    }
+
+    private fun hexOf(bytes: ByteArray): String {
+        val builder = StringBuilder(bytes.size * 2)
+        for (byte in bytes) {
+            val value = byte.toInt() and 0xFF
+            if (value < 0x10) builder.append('0')
+            builder.append(Integer.toHexString(value))
+        }
+        return builder.toString()
+    }
+
+    private companion object {
+        /** The fixed PIN of AirPlay's transient pairing; nobody types this one. */
+        const val TRANSIENT_PIN = "3939"
     }
 
     private fun readLine(stream: BufferedInputStream): String? {
