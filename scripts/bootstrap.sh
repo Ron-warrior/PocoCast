@@ -27,6 +27,28 @@ if [ -f "$SRC/airsonic-sender/consumer-rules.pro" ]; then cp "$SRC/airsonic-send
 if [ -f "$SRC/airsonic-sender/proguard-rules.pro" ]; then cp "$SRC/airsonic-sender/proguard-rules.pro" sender/; fi
 cp "$SRC/LICENSE" sender/LICENSE
 
+# tvOS 27 only runs the AirPlay pairing ceremony for a client that names itself:
+# Apple's log says "passcodeString is empty or clientName is nil. Bailing." and
+# the accessory rejects the identity exchange at M5 with kTLVError_Unknown.
+# Upstream hardcodes the request headers, so add the name here (the header goes
+# out on /pair-pin-start and every /pair-setup, matching pyatv's fix).
+python3 - sender/src/main/java/com/airsonic/sender/pairing/AirplayHttpClient.kt <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+source = path.read_text()
+if "X-Apple-Client-Name" not in source:
+    needle = 'append("User-Agent: AirPlay/950.7.1\\r\\n")'
+    if needle not in source:
+        sys.exit("bootstrap: could not apply the tvOS 27 client-name patch")
+    source = source.replace(
+        needle,
+        needle + '\n            append("X-Apple-Client-Name: PocoCast\\r\\n")',
+        1,
+    )
+    path.write_text(source)
+    print("Patched AirplayHttpClient with X-Apple-Client-Name")
+PY
+
 cp "$SRC/gradlew" .
 cp "$SRC/gradlew.bat" .
 mkdir -p gradle/wrapper
