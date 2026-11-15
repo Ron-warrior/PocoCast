@@ -181,8 +181,8 @@ class CastController {
             Diag.log("pairing: Apple TV, skipping transient and going straight to PIN")
         }
 
-        var pinHs = handshake(target, seed)
-        var started = pinHs.pairSetupBegin { }
+        var pinHs = beginPinPairing(target, seed, say)
+        var started = pinHs.pairSetupBegin(stepLogger())
         var attempt = 0
         while (!started && attempt < PAIRING_RETRIES_MS.size) {
             val waitMs = PAIRING_RETRIES_MS[attempt]
@@ -190,8 +190,8 @@ class CastController {
             say("The TV is not ready to pair yet — waiting ${waitMs / 1000}s…")
             Diag.log("pairing: M1 failed, retry #" + attempt + " in " + waitMs + "ms")
             Thread.sleep(waitMs)
-            pinHs = handshake(target, seed)
-            started = pinHs.pairSetupBegin { }
+            pinHs = beginPinPairing(target, seed, say)
+            started = pinHs.pairSetupBegin(stepLogger())
         }
         Diag.log(
             "pairing: pair-setup begin=" + started + " attempts=" + (attempt + 1) +
@@ -205,7 +205,7 @@ class CastController {
         say("Look at the TV for the 4-digit PIN")
         val pin = askPin() ?: return null
         Diag.log("pairing: PIN entered (" + pin.length + " digits)")
-        if (!pinHs.pairSetupWithPin(pin, { })) {
+        if (!pinHs.pairSetupWithPin(pin, stepLogger())) {
             Diag.log("pairing: PIN pair-setup failed")
             return null
         }
@@ -224,6 +224,34 @@ class CastController {
     private fun isAppleTv(device: AirDevice): Boolean =
         device.type == DeviceType.APPLE_TV ||
             device.txtRecords["model"]?.startsWith("AppleTV", ignoreCase = true) == true
+
+    /**
+     * /pair-pin-start is what puts a 4-digit code on the TV. Without it an Apple
+     * TV never enters pairing mode and the pair-setup M1 below is answered with
+     * an error TLV, which reads on screen as "no PIN ever appears".
+     */
+    private fun beginPinPairing(
+        target: AirDevice,
+        seed: ByteArray,
+        say: (String) -> Unit
+    ): PairingHandshake {
+        val handshake = handshake(target, seed)
+        val shown = handshake.pairPinStart()
+        Diag.log(
+            "pairing: pair-pin-start=" + shown + " status=" + handshake.lastPinStartStatus
+        )
+        if (shown) say("Look at the TV for the 4-digit PIN")
+        return handshake
+    }
+
+    private fun stepLogger(): (PairingHandshake.Step) -> Unit = { step ->
+        val text = when (step) {
+            is PairingHandshake.Step.Info -> step.message
+            is PairingHandshake.Step.Success -> step.message
+            is PairingHandshake.Step.Failure -> "FAILED: " + step.message
+        }
+        Diag.log("pairing: " + text)
+    }
 
     private fun seedOf(prefs: android.content.SharedPreferences): ByteArray {
         prefs.getString("seed", null)?.let { return Base64.decode(it, Base64.NO_WRAP) }
