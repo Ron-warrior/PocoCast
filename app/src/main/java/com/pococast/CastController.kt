@@ -5,6 +5,7 @@ import android.os.PowerManager
 import android.util.Base64
 import com.airsonic.sender.api.AirDevice
 import com.airsonic.sender.api.DeviceListener
+import com.airsonic.sender.api.DeviceType
 import com.airsonic.sender.discovery.AirplayDiscovery
 import com.airsonic.sender.discovery.pickLanIpForTarget
 import com.airsonic.sender.pairing.PairingHandshake
@@ -166,17 +167,42 @@ class CastController {
         }
 
         say("Pairing with ${target.name}…")
-        val open = handshake(target, seed)
-        if (open.pairSetup("3939", onStep = {}, transient = true)) {
-            Diag.log("pairing: transient pair-setup succeeded")
-            return open
+        if (!isAppleTv(target)) {
+            val open = handshake(target, seed)
+            if (open.pairSetup("3939", onStep = {}, transient = true)) {
+                Diag.log("pairing: transient pair-setup succeeded")
+                return open
+            }
+            Diag.log("pairing: transient pair-setup refused, trying PIN")
+        } else {
+            // An Apple TV refuses transient pairing and then holds a short
+            // pairing backoff, which made the PIN attempt's M1 fail straight
+            // afterwards. Skip straight to the exchange it actually wants.
+            Diag.log("pairing: Apple TV, skipping transient and going straight to PIN")
         }
-        Diag.log("pairing: transient pair-setup refused, trying PIN")
 
-        val pinHs = handshake(target, seed)
-        val started = pinHs.pairSetupBegin { }
-        Diag.log("pairing: pair-setup begin=" + started + " pinStartStatus=" + pinHs.lastPinStartStatus)
-        if (!started) return null
+        var pinHs = handshake(target, seed)
+        var started = pinHs.pairSetupBegin { }
+        var attempt = 0
+        while (!started && attempt < PAIRING_RETRIES_MS.size) {
+            val waitMs = PAIRING_RETRIES_MS[attempt]
+            attempt++
+            say("The TV is not ready to pair yet — waiting ${waitMs / 1000}s…")
+            Diag.log("pairing: M1 failed, retry #" + attempt + " in " + waitMs + "ms")
+            Thread.sleep(waitMs)
+            pinHs = handshake(target, seed)
+            started = pinHs.pairSetupBegin { }
+        }
+        Diag.log(
+            "pairing: pair-setup begin=" + started + " attempts=" + (attempt + 1) +
+                " pinStartStatus=" + pinHs.lastPinStartStatus
+        )
+        if (!started) {
+            throw IOException(
+                "the Apple TV refused pair-setup — it may still be backing off; wait a minute and try again"
+            )
+        }
+        say("Look at the TV for the 4-digit PIN")
         val pin = askPin() ?: return null
         Diag.log("pairing: PIN entered (" + pin.length + " digits)")
         if (!pinHs.pairSetupWithPin(pin, { })) {
@@ -194,6 +220,10 @@ class CastController {
 
     private fun handshake(target: AirDevice, seed: ByteArray) =
         PairingHandshake(target.host, target.port, "PocoCast-Android", seed)
+
+    private fun isAppleTv(device: AirDevice): Boolean =
+        device.type == DeviceType.APPLE_TV ||
+            device.txtRecords["model"]?.startsWith("AppleTV", ignoreCase = true) == true
 
     private fun seedOf(prefs: android.content.SharedPreferences): ByteArray {
         prefs.getString("seed", null)?.let { return Base64.decode(it, Base64.NO_WRAP) }
@@ -332,5 +362,9 @@ class CastController {
             .apply { setReferenceCounted(false); acquire(6 * 60 * 60 * 1000L) }
     }
 
-    companion object { private const val PREFS = "pococast" }
+    companion object {
+        private const val PREFS = "pococast"
+        /** Pairing backoff after a refused attempt; TV clears it within ~30s. */
+        private val PAIRING_RETRIES_MS = longArrayOf(5_000L, 15_000L, 30_000L)
+    }
 }
