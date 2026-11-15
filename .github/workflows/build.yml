@@ -40,14 +40,20 @@ jobs:
           name: pococast-debug
           path: app/build/outputs/apk/debug/*.apk
 
-      # A release asset is what makes the APK downloadable in one tap on the
-      # phone, at a link that never changes; the artifact always arrives as a
-      # zip that has to be unpacked first.
+      # One release per version. The asset carries the version in its name so
+      # the phone's Downloads folder shows PocoCast-0.3.4.apk instead of a
+      # pile of app-debug (1).apk files.
       - name: Publish the APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view latest >/dev/null 2>&1 || \
-            gh release create latest --title "PocoCast debug build" \
-              --notes "Signed debug APK built from ${GITHUB_SHA:0:7}."
-          gh release upload latest app/build/outputs/apk/debug/app-debug.apk --clobber
+          set -euo pipefail
+          version="$(grep -m1 '^ *versionName = ' app/build.gradle.kts | sed 's/.*"\(.*\)".*/\1/')"
+          if [ -z "$version" ]; then echo "no versionName in app/build.gradle.kts"; exit 1; fi
+          asset="PocoCast-${version}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "$asset"
+          gh release view "v${version}" >/dev/null 2>&1 || \
+            gh release create "v${version}" --title "PocoCast ${version}" \
+              --notes "PocoCast ${version} — signed debug APK built from ${GITHUB_SHA:0:7}."
+          gh release upload "v${version}" "$asset" --clobber
+          echo "Published $asset on release v${version}"
