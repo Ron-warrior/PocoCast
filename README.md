@@ -182,9 +182,21 @@ foreground during playback.
 ## Building it
 
 The repository builds itself: every push to `main` runs
-`.github/workflows/build.yml`, which produces the APK as a workflow artifact
-called `pococast-debug`. Download it on the phone, allow installs from that
-source, and install.
+`.github/workflows/build.yml`, which assembles the APK, attaches it to a release
+tagged `latest`, and also leaves the zipped copy on the Actions tab.
+
+To install, open this on the phone:
+
+    https://github.com/Ron-warrior/PocoCast/releases/latest/download/app-debug.apk
+
+Download it, allow installs from that source when Android asks, and install. The
+repository is private, so the browser has to be signed in to GitHub; the release
+page is https://github.com/Ron-warrior/PocoCast/releases.
+
+The workflow keeps the debug signing key between runs, so a later build installs
+over an earlier one instead of colliding with it. If Android ever reports a
+package conflict anyway, uninstall the old PocoCast first — that only loses the
+app's cache.
 
 Locally you only need a JDK 17 and the Android SDK:
 
