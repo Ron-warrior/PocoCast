@@ -13,20 +13,50 @@ import com.airsonic.sender.streaming.LocalMediaHttpServer
 import com.airsonic.sender.streaming.RangeSource
 import java.io.File
 import java.io.FileInputStream
+import java.io.FilterInputStream
 import java.io.IOException
+import java.io.InputStream
 import java.net.NetworkInterface
 import java.net.URL
 import java.security.SecureRandom
 
-/** Discovery, pairing and the AirPlay session, in one place. */
+/**
+ * Discovery, pairing and the AirPlay session, in one place. Every step is
+ * mirrored into [Diag] so a failed cast can be explained after the fact.
+ */
 class CastController {
 
     private var discovery: AirplayDiscovery? = null
     private var video: AirplayVideoController? = null
     private var server: LocalMediaHttpServer? = null
+    private var serverPort: Int? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
+    private var target: AirDevice? = null
+    private var mediaUrl: String? = null
+
     val devices = mutableListOf<AirDevice>()
+
+    /** Summary for the diagnostic file. */
+    fun about(): String = buildString {
+        val device = target
+        appendLine(
+            "selected: " + (device?.let {
+                it.name + " " + it.host + ":" + it.port + " type=" + it.type +
+                    " caps=" + it.capabilities + " txt=" + it.txtRecords
+            } ?: "none")
+        )
+        appendLine(
+            "controller: " + (video?.let {
+                "lastStatus=" + it.lastStatus + " lastError=" + it.lastError
+            } ?: "none")
+        )
+        appendLine(
+            "media server: " + (server?.let { "port=" + serverPort + " path=" + it.path } ?: "none")
+        )
+        appendLine("media url: " + (mediaUrl ?: "none"))
+        appendLine("discovered: " + devices.joinToString { it.name + "@" + it.host })
+    }
 
     fun startDiscovery(context: Context, onChanged: () -> Unit, onError: (String) -> Unit) {
         val existing = discovery
@@ -38,15 +68,20 @@ class CastController {
 
     private fun listener(onChanged: () -> Unit, onError: (String) -> Unit) = object : DeviceListener {
         override fun onDeviceFound(device: AirDevice) {
+            Diag.log("discovery: found " + device.name + " " + device.host + ":" + device.port)
             devices.removeAll { it.id == device.id }
             devices.add(device)
             onChanged()
         }
         override fun onDeviceLost(device: AirDevice) {
+            Diag.log("discovery: lost " + device.name)
             devices.removeAll { it.name == device.name }
             onChanged()
         }
-        override fun onDiscoveryFailed(reason: String) = onError(reason)
+        override fun onDiscoveryFailed(reason: String) {
+            Diag.log("discovery: failed " + reason)
+            onError(reason)
+        }
     }
 
     fun stopDiscovery() { discovery?.stop(); discovery = null }
@@ -59,19 +94,37 @@ class CastController {
         say: (String) -> Unit,
         askPin: () -> String?
     ) {
+        this.target = target
+        Diag.log("cast: target=" + target.name + " " + target.host + ":" + target.port +
+            " type=" + target.type + " caps=" + target.capabilities)
+        Diag.log("cast: input=" + raw.take(160))
+
         keepAwake(context)
         val handshake = pair(context, target, say, askPin)
             ?: throw IOException("pairing with ${target.name} failed")
+        Diag.log("pairing: completed, sessionKey=" + (handshake.sessionKey?.size ?: 0) + "B")
+
         say("Setting up the AirPlay session…")
         val controller = AirplayVideoController(target.host, handshake)
-        if (!controller.connect()) {
+        controller.onEvent = { firstLine, body ->
+            Diag.log("event: " + firstLine + " body=" + body.size + "B")
+        }
+        controller.onConnectionLost = { Diag.log("session: connection lost (feedback keepalive failed)") }
+        val connected = controller.connect()
+        Diag.log("session: connect=" + connected + " lastStatus=" + controller.lastStatus +
+            " lastError=" + controller.lastError)
+        if (!connected) {
             throw IOException("the Apple TV refused the session setup (SETUP/RECORD)")
         }
         video = controller
 
         val playable = prepare(context, target, raw, say)
+        mediaUrl = playable
         say("Asking ${target.name} to play…")
-        if (!controller.play(playable)) {
+        val played = controller.play(playable)
+        Diag.log("play: result=" + played + " lastStatus=" + controller.lastStatus +
+            " lastError=" + controller.lastError)
+        if (!played) {
             throw IOException("the Apple TV refused the play command")
         }
     }
@@ -81,7 +134,9 @@ class CastController {
         runCatching { video?.close() }
         video = null
         server?.stop(); server = null
+        serverPort = null
         wakeLock?.let { if (it.isHeld) it.release() }; wakeLock = null
+        Diag.log("session: stopped")
     }
 
     // ---- pairing ----
@@ -96,29 +151,45 @@ class CastController {
         val seed = seedOf(prefs)
         val storedLtpk = prefs.getString("ltpk:${target.host}", null)
             ?.let { Base64.decode(it, Base64.NO_WRAP) }
+        Diag.log("pairing: stored accessory key=" + (storedLtpk != null))
 
         if (storedLtpk != null) {
             say("Reconnecting to ${target.name}…")
             val known = handshake(target, seed).apply { knownAccessoryLtpk = storedLtpk }
-            if (known.pairVerify { step -> if (step is PairingHandshake.Step.Failure) say(step.message) }) {
-                return known
+            val verified = known.pairVerify { step ->
+                if (step is PairingHandshake.Step.Failure) Diag.log("pairing: verify failed " + step.message)
             }
+            Diag.log("pairing: pair-verify with stored key=" + verified +
+                " lastPinStart=" + known.lastPinStartStatus)
+            if (verified) return known
             prefs.edit().remove("ltpk:${target.host}").apply()
         }
 
         say("Pairing with ${target.name}…")
         val open = handshake(target, seed)
-        if (open.pairSetup("3939", onStep = {}, transient = true)) return open
+        if (open.pairSetup("3939", onStep = {}, transient = true)) {
+            Diag.log("pairing: transient pair-setup succeeded")
+            return open
+        }
+        Diag.log("pairing: transient pair-setup refused, trying PIN")
 
         val pinHs = handshake(target, seed)
-        if (!pinHs.pairSetupBegin { }) return null
+        val started = pinHs.pairSetupBegin { }
+        Diag.log("pairing: pair-setup begin=" + started + " pinStartStatus=" + pinHs.lastPinStartStatus)
+        if (!started) return null
         val pin = askPin() ?: return null
-        if (!pinHs.pairSetupWithPin(pin, { })) return null
+        Diag.log("pairing: PIN entered (" + pin.length + " digits)")
+        if (!pinHs.pairSetupWithPin(pin, { })) {
+            Diag.log("pairing: PIN pair-setup failed")
+            return null
+        }
         pinHs.lastAccessoryLtpk?.let {
             prefs.edit().putString("ltpk:${target.host}", Base64.encodeToString(it, Base64.NO_WRAP)).apply()
         }
         val verified = handshake(target, seed).apply { knownAccessoryLtpk = pinHs.lastAccessoryLtpk }
-        return if (verified.pairVerify { }) verified else null
+        val ok = verified.pairVerify { }
+        Diag.log("pairing: pair-verify after PIN=" + ok)
+        return if (ok) verified else null
     }
 
     private fun handshake(target: AirDevice, seed: ByteArray) =
@@ -141,27 +212,34 @@ class CastController {
     ): String {
         YouTube.videoIdIn(raw)?.let { id ->
             val media = YouTube.resolve(id, say)
-            media.directUrl?.let { return it }
+            media.directUrl?.let {
+                Diag.log("media: YouTube gave a direct URL, the TV fetches it itself")
+                return it
+            }
             say("Downloading ${media.title}…")
             val dir = File(context.cacheDir, "cast").apply { mkdirs() }
-            val video = File(dir, "video.mp4").apply { delete() }
-            val audio = File(dir, "audio.m4a").apply { delete() }
-            download(media.videoUrl!!, video, say)
-            download(media.audioUrl!!, audio, say)
+            val videoFile = File(dir, "video.mp4").apply { delete() }
+            val audioFile = File(dir, "audio.m4a").apply { delete() }
+            download(media.videoUrl!!, videoFile, say)
+            download(media.audioUrl!!, audioFile, say)
+            Diag.log("media: downloaded video=" + videoFile.length() + "B audio=" + audioFile.length() + "B")
             val output = File(dir, "youtube.mp4").apply { delete() }
-            val joined = Remuxer.combine(video, audio, output, { false }) { percent ->
+            val joined = Remuxer.combine(videoFile, audioFile, output, { false }) { percent ->
                 say("Joining the tracks… $percent%")
             }
-            video.delete(); audio.delete()
+            Diag.log("media: joined=" + joined.file.length() + "B")
+            videoFile.delete(); audioFile.delete()
             return serve(joined.file, "video/mp4", target)
         }
 
         val info = StreamSource.probe(raw)
+        Diag.log("media: probe container=" + info.container + " " + info.describe())
         val host = runCatching { URL(raw).host }.getOrNull()
         val loopback = host == "127.0.0.1" || host == "localhost" || host == "::1"
         if (!loopback && (info.container == StreamInfo.Container.MP4 ||
                 info.container == StreamInfo.Container.HLS)) {
             say("The TV can fetch this ${info.describe()} itself")
+            Diag.log("media: handing the URL to the TV directly")
             return raw
         }
 
@@ -177,6 +255,7 @@ class CastController {
                 say("Downloading ${StreamSource.formatSize(done)}$percent")
             }
         )
+        Diag.log("media: downloaded " + source.length() + "B")
         if (info.container == StreamInfo.Container.MP4) {
             return serve(source, "video/mp4", target)
         }
@@ -186,6 +265,7 @@ class CastController {
         val result = Remuxer.remux(source, output, { false }) { percent ->
             say("Repackaging $percent%")
         }
+        Diag.log("media: remuxed " + result.file.length() + "B")
         source.delete()
         return serve(result.file, "video/mp4", target)
     }
@@ -203,19 +283,37 @@ class CastController {
     }
 
     private fun serve(file: File, mime: String, target: AirDevice): String {
+        val total = file.length()
         val source = object : RangeSource {
-            override val length: Long = file.length()
+            override val length: Long = total
             override val mimeType: String = mime
-            override fun open(offset: Long): java.io.InputStream =
-                FileInputStream(file).apply { channel.position(offset) }
+            override fun open(offset: Long): InputStream {
+                Diag.log("media: TV requested offset=" + offset + " of " + total + "B (" + mime + ")")
+                val base = FileInputStream(file).apply { channel.position(offset) }
+                return object : FilterInputStream(base) {
+                    private var served = 0L
+                    override fun read(b: ByteArray, off: Int, len: Int): Int {
+                        val n = super.read(b, off, len)
+                        if (n > 0) served += n
+                        return n
+                    }
+                    override fun close() {
+                        Diag.log("media: stream closed after " + served + "B")
+                        super.close()
+                    }
+                }
+            }
         }
         val http = LocalMediaHttpServer(source)
         val port = http.start()
         server?.stop()
         server = http
+        serverPort = port
         val ip = pickLanIpForTarget(localAddresses(), target.host)
             ?: throw IOException("no LAN address to serve the video from")
-        return "http://$ip:$port${http.path}"
+        val url = "http://$ip:$port${http.path}"
+        Diag.log("media: serving " + total + "B at " + url)
+        return url
     }
 
     private fun localAddresses(): List<String> = runCatching {
