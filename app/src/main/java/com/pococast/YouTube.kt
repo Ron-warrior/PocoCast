@@ -36,14 +36,15 @@ object YouTube {
             NewPipe.init(NpeDownloader())
         }
         say("Asking YouTube for the stream…")
+        Diag.log("youtube: resolving " + videoId)
         val extractor = ServiceList.YouTube
             .getStreamExtractor("https://www.youtube.com/watch?v=$videoId")
         extractor.fetchPage()
         val title = runCatching { extractor.name }.getOrNull().orEmpty().ifEmpty { "YouTube video" }
 
-        runCatching { extractor.hlsUrl }.getOrNull()
-            ?.takeIf { it.isNotBlank() }
-            ?.let { return YouTubeMedia(title, directUrl = it) }
+        val hls = runCatching { extractor.hlsUrl }.getOrNull()?.takeIf { it.isNotBlank() }
+        Diag.log("youtube: title=" + title + " hls=" + (hls != null))
+        if (hls != null) return YouTubeMedia(title, directUrl = hls)
 
         val videos = runCatching { extractor.videoOnlyStreams }.getOrNull().orEmpty()
             .filter { it.format == MediaFormat.MPEG_4 }
@@ -55,6 +56,8 @@ object YouTube {
         val video = videos.maxByOrNull { heightOf(it.resolution) }
         val audio = audios.maxByOrNull { it.averageBitrate }
         if (video != null && audio != null) {
+            Diag.log("youtube: tracks video=" + heightOf(video.resolution) + "p audio=" +
+                audio.averageBitrate + "kbps")
             say("YouTube: ${heightOf(video.resolution)}p, joining the tracks on the phone")
             return YouTubeMedia(title, videoUrl = video.url, audioUrl = audio.url)
         }
@@ -64,6 +67,7 @@ object YouTube {
             .maxByOrNull { heightOf(it.resolution) }
         if (muxed != null) return YouTubeMedia(title, directUrl = muxed.url)
 
+        Diag.log("youtube: no usable stream (videoOnly=" + videos.size + " audio=" + audios.size + ")")
         throw IllegalStateException("YouTube offered no H.264/AAC stream for this video")
     }
 

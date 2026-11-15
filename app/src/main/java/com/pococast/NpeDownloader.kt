@@ -25,6 +25,9 @@ class NpeDownloader : Downloader() {
                 connection.outputStream.use { it.write(body) }
             }
             val code = connection.responseCode
+            if (code !in 200..299) {
+                Diag.log("npe: HTTP " + code + " for " + request.url().substringBefore('?'))
+            }
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
             val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
             val headers = connection.headerFields
