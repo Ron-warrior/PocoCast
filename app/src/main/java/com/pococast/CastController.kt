@@ -166,6 +166,11 @@ class CastController {
             prefs.edit().remove("ltpk:${target.host}").apply()
         }
 
+        if (prefs.getBoolean("onetime:${target.host}", false)) {
+            say("Pairing with ${target.name}…")
+            return pairOneTime(target, seed, say, askPin)
+        }
+
         say("Pairing with ${target.name}…")
         if (!isAppleTv(target)) {
             val open = handshake(target, seed)
@@ -206,8 +211,13 @@ class CastController {
         val pin = askPin() ?: return null
         Diag.log("pairing: PIN entered (" + pin.length + " digits)")
         if (!pinHs.pairSetupWithPin(pin, stepLogger())) {
-            Diag.log("pairing: PIN pair-setup failed")
-            return null
+            // tvOS 27 answers the identity exchange (M5) with kTLVError_Unknown even
+            // when the PIN is right, so it will not store us as a controller. The
+            // SRP session from M1-M4 is still valid, so pair one-time instead and
+            // remember that this TV needs it.
+            Diag.log("pairing: identity exchange refused, switching to one-time pairing")
+            prefs.edit().putBoolean("onetime:${target.host}", true).apply()
+            return pairOneTime(target, seed, say, askPin)
         }
         pinHs.lastAccessoryLtpk?.let {
             prefs.edit().putString("ltpk:${target.host}", Base64.encodeToString(it, Base64.NO_WRAP)).apply()
@@ -216,6 +226,28 @@ class CastController {
         val ok = verified.pairVerify { }
         Diag.log("pairing: pair-verify after PIN=" + ok)
         return if (ok) verified else null
+    }
+
+    /**
+     * Pair-setup that stops after M4, using the SRP session key as the session
+     * root. Nothing is stored on either side, so the TV shows a fresh code for
+     * every cast — but it works where the full identity exchange is refused.
+     */
+    private fun pairOneTime(
+        target: AirDevice,
+        seed: ByteArray,
+        say: (String) -> Unit,
+        askPin: () -> String?
+    ): PairingHandshake? {
+        val once = beginPinPairing(target, seed, say)
+        val code = askPin() ?: return null
+        Diag.log("pairing: one-time code entered (" + code.length + " digits)")
+        if (!once.pairSetup(code, stepLogger(), oneTime = true)) {
+            Diag.log("pairing: one-time pair-setup failed")
+            return null
+        }
+        Diag.log("pairing: one-time session ready, key=" + (once.sessionKey?.size ?: 0) + "B")
+        return once
     }
 
     private fun handshake(target: AirDevice, seed: ByteArray) =
