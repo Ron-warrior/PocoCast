@@ -516,19 +516,27 @@ class MainActivity : Activity() {
 
                 // A current tvOS answers 403 to /play until the connection has
                 // completed HomeKit pairing, so that always comes first.
+                var pairingNote = "already paired"
                 if (!active.isPaired) {
                     setStatus("Pairing with " + (targetName ?: host) + "…")
+                    var pairingError: String? = null
                     val pairing = try {
                         active.pair()
                     } catch (error: Throwable) {
+                        pairingError = error.message ?: error.javaClass.simpleName
                         null
+                    }
+                    pairingNote = when {
+                        pairingError != null -> "it failed: $pairingError"
+                        pairing == null -> "it failed with no reply"
+                        pairing.code != 200 -> "refused (" + pairing.code + " " + pairing.statusText + ")"
+                        else -> "ok"
                     }
                     if (pairing == null || pairing.code != 200) {
                         setStatus(
-                            "The Apple TV refused pairing" +
-                                (if (pairing != null) " (" + pairing.code + " " + pairing.statusText + ")" else "") +
-                                ". On the TV open Settings > AirPlay and HomeKit, set Allow Access to " +
-                                "\"Anyone on the Same Network\", and turn Require Password off."
+                            "The Apple TV refused pairing (" + pairingNote + "). On the TV open " +
+                                "Settings > AirPlay and HomeKit, set Allow Access to \"Anyone on the " +
+                                "Same Network\", and turn Require Password off."
                         )
                     }
                 }
@@ -548,10 +556,15 @@ class MainActivity : Activity() {
                 if (playing) {
                     setStatus("Playback started on " + (targetName ?: host) + ".")
                 } else {
+                    val report = try {
+                        active.diagnose()
+                    } catch (error: Throwable) {
+                        "diagnosis failed: " + (error.message ?: error.javaClass.simpleName)
+                    }
                     setStatus(
                         "AirPlay refused the request (" + response.code + " " + response.statusText + "). " +
-                            "The video is being served at $url — a player app on the TV can open that " +
-                            "address directly while this is worked out."
+                            "Pairing said " + pairingNote + ". The video is served at $url for a player " +
+                            "app on the TV. Diagnosis:\n" + report
                     )
                 }
             } catch (cancelled: CancelledException) {

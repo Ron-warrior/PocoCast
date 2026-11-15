@@ -44,6 +44,13 @@ object Srp {
 
     private val G = BigInteger.valueOf(5)
 
+    /**
+     * The SRP user name for pairing, and it is a fixed string rather than an
+     * identifier of this client: the password verifier both sides derive is a
+     * hash of this, ":" and the PIN. Getting it wrong makes every proof fail.
+     */
+    private const val PAIRING_USERNAME = "Pair-Setup"
+
     class Pairing(
         val clientPublic: ByteArray,
         val proof: ByteArray,
@@ -53,15 +60,14 @@ object Srp {
 
     /**
      * Runs the SRP arithmetic for one exchange: [salt] and [serverKey] come from
-     * the Apple TV's first reply, [username] is this client's identifier and
-     * [pin] is the fixed transient PIN.
+     * the Apple TV's first reply, and [pin] is the fixed transient PIN.
      */
-    fun client(username: String, pin: String, salt: ByteArray, serverKey: ByteArray): Pairing {
+    fun client(pin: String, salt: ByteArray, serverKey: ByteArray): Pairing {
         val serverPublic = BigInteger(1, serverKey)
         require(serverPublic.mod(N).signum() != 0) { "the Apple TV sent an unusable key" }
 
         val multiplier = hashInt(unsigned(N), pad(unsigned(G)))
-        val secret = hash((username + ":" + pin).toByteArray(Charsets.UTF_8))
+        val secret = hash((PAIRING_USERNAME + ":" + pin).toByteArray(Charsets.UTF_8))
         val passwordHash = hashInt(salt, secret)
         val verifier = G.modPow(passwordHash, N)
 
@@ -75,7 +81,7 @@ object Srp {
 
         val proof = hash(
             unsigned(hashInt(unsigned(N)).xor(hashInt(unsigned(G)))),
-            unsigned(hashInt(username.toByteArray(Charsets.UTF_8))),
+            unsigned(hashInt(PAIRING_USERNAME.toByteArray(Charsets.UTF_8))),
             salt,
             unsigned(clientPublic),
             unsigned(serverPublic),

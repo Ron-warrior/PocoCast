@@ -6,7 +6,6 @@ import java.io.IOException
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.security.SecureRandom
 import java.util.Locale
 import java.util.UUID
 
@@ -34,7 +33,6 @@ class AirPlaySession(val address: String, val port: Int = 7000) {
     private var cseq = 0
     private var sessionHeader: String? = null
     private val clientSessionId: String = UUID.randomUUID().toString()
-    private val pairingUsername: String = hexOf(SecureRandom().generateSeed(32))
 
     /** Whether the pairing exchange has already succeeded on this connection. */
     var isPaired: Boolean = false
@@ -118,7 +116,7 @@ class AirPlaySession(val address: String, val port: Int = 7000) {
         val serverKey = opening[HapTlv.PUBLIC_KEY]
             ?: throw IOException("the Apple TV did not offer a pairing key")
 
-        val srp = Srp.client(pairingUsername, TRANSIENT_PIN, salt, serverKey)
+        val srp = Srp.client(TRANSIENT_PIN, salt, serverKey)
 
         val finished = post(
             "/pair-setup",
@@ -252,14 +250,116 @@ class AirPlaySession(val address: String, val port: Int = 7000) {
         return Response(code, statusText, headers, body)
     }
 
-    private fun hexOf(bytes: ByteArray): String {
-        val builder = StringBuilder(bytes.size * 2)
-        for (byte in bytes) {
-            val value = byte.toInt() and 0xFF
-            if (value < 0x10) builder.append('0')
-            builder.append(Integer.toHexString(value))
+    /**
+     * Repeats the whole exchange and reports what each step answered, without
+     * throwing. Used when a play request is refused, so the reason is on screen
+     * instead of guessed at.
+     */
+    @Synchronized
+    fun diagnose(): String {
+        val report = StringBuilder()
+        close()
+
+        fun record(label: String, block: () -> Response) {
+            try {
+                val response = block()
+                report.append(label).append(": ").append(response.code).append(' ')
+                    .append(response.statusText)
+                val server = response.headers["server"]
+                if (!server.isNullOrBlank()) report.append(" [").append(server).append(']')
+                if (response.body.isNotEmpty()) {
+                    report.append(" <").append(summarise(response.body)).append('>')
+                }
+                report.append('\n')
+            } catch (error: Throwable) {
+                report.append(label).append(": ")
+                    .append(error.message ?: error.javaClass.simpleName).append('\n')
+            }
         }
-        return builder.toString()
+
+        record("/info") {
+            request("GET", "/info", null, false, "User-Agent" to "AirPlay/320.20")
+        }
+        record("/pair-pin-start") {
+            post("/pair-pin-start", ByteArray(0))
+        }
+
+        var salt: ByteArray? = null
+        var serverKey: ByteArray? = null
+        record("/pair-setup m1") {
+            val response = post(
+                "/pair-setup",
+                HapTlv.encode(
+                    HapTlv.METHOD to byteArrayOf(0x00),
+                    HapTlv.SEQ_NO to byteArrayOf(0x01),
+                    HapTlv.FLAGS to byteArrayOf(0x10)
+                )
+            )
+            val opened = HapTlv.decode(response.body)
+            salt = opened[HapTlv.SALT]
+            serverKey = opened[HapTlv.PUBLIC_KEY]
+            response
+        }
+
+        val saltValue = salt
+        val keyValue = serverKey
+        if (saltValue == null || keyValue == null) {
+            report.append("pairing: the salt or key was missing\n")
+        } else {
+            val srp = try {
+                Srp.client(TRANSIENT_PIN, saltValue, keyValue)
+            } catch (error: Throwable) {
+                report.append("srp: ").append(error.message ?: "failed").append('\n')
+                null
+            }
+            if (srp != null) {
+                record("/pair-setup m3") {
+                    post(
+                        "/pair-setup",
+                        HapTlv.encode(
+                            HapTlv.SEQ_NO to byteArrayOf(0x03),
+                            HapTlv.PUBLIC_KEY to srp.clientPublic,
+                            HapTlv.PROOF to srp.proof
+                        )
+                    )
+                }
+            }
+        }
+
+        record("/play") {
+            play("http://192.0.2.1/nothing.mp4")
+        }
+
+        return report.toString().trim()
+    }
+
+    /** A one-line description of a reply body: TLV tags, a plist, or plain text. */
+    private fun summarise(body: ByteArray): String {
+        val looksLikeTlv = body.size >= 2 &&
+            (body[0].toInt() and 0xFF) <= 0x20 &&
+            (body[1].toInt() and 0xFF) + 2 <= body.size
+        if (looksLikeTlv) {
+            val entries = HapTlv.decode(body)
+            if (entries.isNotEmpty()) {
+                return entries.entries.joinToString(", ") { entry ->
+                    val name = when (entry.key) {
+                        HapTlv.METHOD -> "Method"
+                        HapTlv.SALT -> "Salt"
+                        HapTlv.PUBLIC_KEY -> "PublicKey"
+                        HapTlv.PROOF -> "Proof"
+                        HapTlv.SEQ_NO -> "SeqNo"
+                        HapTlv.ERROR -> "Error" + ((entry.value.firstOrNull()?.toInt() ?: -1) and 0xFF)
+                        HapTlv.FLAGS -> "Flags"
+                        else -> "tag" + entry.key
+                    }
+                    name + ":" + entry.value.size
+                }
+            }
+        }
+        val text = body.toString(Charsets.UTF_8)
+        if (text.startsWith("bplist")) return "binary plist, " + body.size + " bytes"
+        val printable = text.filter { it.isLetterOrDigit() || it in " .,:;/<>-_" }.take(80)
+        return if (printable.isNotBlank()) printable else body.size.toString() + " bytes"
     }
 
     private companion object {
