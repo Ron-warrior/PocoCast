@@ -21,6 +21,7 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import com.airsonic.sender.api.AirDevice
+import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -40,6 +41,7 @@ class MainActivity : Activity() {
 
     private var selected: AirDevice? = null
     private var busy = false
+    private var lastReport: File? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -76,6 +78,10 @@ class MainActivity : Activity() {
                 skin.muted
             ).apply { setLineSpacing(dp(3).toFloat(), 1f) },
             matchWrap(top = 14)
+        )
+        body.addView(
+            miniButton("Export diagnostics") { exportDiagnostics() },
+            matchWrap(top = 16)
         )
 
         setContentView(ScrollView(this).apply {
@@ -435,6 +441,8 @@ class MainActivity : Activity() {
     private fun startCast(raw: String) {
         val target = selected ?: return say("Pick an Apple TV first.")
         if (busy) return
+        Diag.reset()
+        Diag.log("ui: cast tapped for " + target.name + " (" + target.host + ")")
         setBusy(true)
         say("Connecting to ${target.name}…")
         worker.execute {
@@ -442,7 +450,13 @@ class MainActivity : Activity() {
                 cast.cast(this, target, raw, { message -> say(message) }, { askPinBlocking() })
                 say("Sent to ${target.name}. If the TV stays black, it refused the stream URL.")
             } catch (t: Throwable) {
-                say("Failed: " + (t.message ?: t.javaClass.simpleName))
+                Diag.error("cast failed", t)
+                val report = runCatching { Diag.writeReport(this@MainActivity, cast.about()) }.getOrNull()
+                lastReport = report
+                say(
+                    "Failed: " + (t.message ?: t.javaClass.simpleName) +
+                        if (report != null) " — diagnostics saved; tap Export diagnostics to send them." else ""
+                )
             } finally {
                 runOnUiThread { setBusy(false) }
             }
@@ -554,6 +568,19 @@ class MainActivity : Activity() {
 
         latch.await(120, TimeUnit.SECONDS)
         return pin
+    }
+
+    private fun exportDiagnostics() {
+        val file = runCatching { Diag.writeReport(this, cast.about()) }.getOrNull()
+        if (file == null) {
+            say("Could not write a diagnostics file.")
+            return
+        }
+        lastReport = file
+        Diag.log("ui: diagnostics written to " + file.name)
+        say("Diagnostics saved: " + file.name)
+        runCatching { Diag.share(this, file) }
+            .onFailure { say("Saved to " + file.absolutePath) }
     }
 
     private fun say(message: String) {
