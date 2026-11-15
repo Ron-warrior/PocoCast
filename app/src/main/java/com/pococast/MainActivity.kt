@@ -649,11 +649,15 @@ class MainActivity : Activity() {
 
         val output = File(cacheFolder(), "youtube-" + Integer.toHexString(link.hashCode()) + ".mp4")
         output.delete()
-        var video: File? = null
-        var audio: File? = null
+
+        val video = downloadToCache(choice.videoUrl, "youtube-video", "Downloading the video track")
+        val audio = try {
+            downloadToCache(audioUrl, "youtube-audio", "Downloading the audio track")
+        } catch (error: Throwable) {
+            video.delete()
+            throw error
+        }
         try {
-            video = downloadToCache(choice.videoUrl, "youtube-video", "Downloading the video track")
-            audio = downloadToCache(audioUrl, "youtube-audio", "Downloading the audio track")
             setStatus("Joining the video and audio tracks…")
             val result = Remuxer.combine(video, audio, output, { cancelRequested }) { percent ->
                 setStatus("Joining the video and audio tracks… $percent%")
@@ -662,8 +666,8 @@ class MainActivity : Activity() {
             preparedFrom = link
             return result.file
         } finally {
-            video?.delete()
-            audio?.delete()
+            video.delete()
+            audio.delete()
         }
     }
 
@@ -799,9 +803,10 @@ class MainActivity : Activity() {
         val file = File(cacheFolder(), prefix + "-" + Integer.toHexString(url.hashCode()) + ".part")
         file.delete()
         setStatus(what + "…")
-        StreamSource.download(url, file, { cancelRequested }) { written, total ->
-            setStatus(what + "… " + copyProgress(written, total))
-        }
+        StreamSource.download(
+            url, file, { cancelRequested },
+            { written, total -> setStatus(what + "… " + copyProgress(written, total)) }
+        )
         return file
     }
 

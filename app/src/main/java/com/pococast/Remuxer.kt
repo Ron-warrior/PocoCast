@@ -144,10 +144,11 @@ object Remuxer {
 
             mux.start()
 
-            val duration = durationOf(video.format, if (audioOut >= 0) audio?.format else null)
+            val audioPicked = audio
+            val duration = durationOf(video.format, if (audioOut >= 0) audioPicked?.format else null)
             val videoReader = Reader(videoExtractor, video.track, bufferSizeOf(video.format))
-            val audioReader = if (audioOut >= 0 && audio != null) {
-                Reader(audioExtractor, audio.track, bufferSizeOf(audio.format))
+            val audioReader = if (audioOut >= 0 && audioPicked != null) {
+                Reader(audioExtractor, audioPicked.track, bufferSizeOf(audioPicked.format))
             } else {
                 null
             }
