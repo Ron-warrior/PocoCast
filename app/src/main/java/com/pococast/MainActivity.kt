@@ -38,6 +38,10 @@ class MainActivity : Activity() {
     private lateinit var link: EditText
     private lateinit var castButton: TextView
     private lateinit var stopButton: TextView
+    private lateinit var updateCard: LinearLayout
+    private lateinit var updateText: TextView
+    private lateinit var updateAction: TextView
+    private var pendingUpdate: Updater.Release? = null
 
     private var selected: AirDevice? = null
     private var busy = false
@@ -65,6 +69,7 @@ class MainActivity : Activity() {
         body.addView(deviceBox, matchWrap(top = 10))
 
         body.addView(buildStatusCard(), matchWrap(top = 14))
+        body.addView(buildUpdateCard(), matchWrap(top = 10))
 
         body.addView(sectionRow("Or paste a link"), matchWrap(top = 24))
         body.addView(buildInputCard(), matchWrap(top = 8))
@@ -92,6 +97,7 @@ class MainActivity : Activity() {
 
         showDevices()
         discover()
+        checkForUpdate()
 
         if (intent?.action == Intent.ACTION_SEND) {
             val shared = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim().orEmpty()
@@ -377,6 +383,92 @@ class MainActivity : Activity() {
             isFocusable = true
             if (primary) elevation = dp(3).toFloat()
             setOnClickListener { onClick() }
+        }
+    }
+
+    private fun buildUpdateCard(): View {
+        updateCard = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = rounded(
+                skin.color(R.color.cyan_soft),
+                dp(12).toFloat(),
+                skin.cyan,
+                dp(1).toFloat()
+            )
+            setPadding(dp(14), dp(12), dp(12), dp(12))
+            visibility = View.GONE
+        }
+        updateText = label("", 13f, skin.ink).apply { setLineSpacing(dp(3).toFloat(), 1f) }
+        updateCard.addView(
+            updateText,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        updateAction = label("Update", 13f, skin.color(R.color.cta_text), medium = true).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(16), dp(10), dp(16), dp(10))
+            background = ripple(
+                rounded(skin.color(R.color.cta), dp(999).toFloat()),
+                skin.color(R.color.ripple_cta)
+            )
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { startUpdate() }
+        }
+        updateCard.addView(
+            updateAction,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = dp(12) }
+        )
+        return updateCard
+    }
+
+    // ---- updating ----
+
+    private fun checkForUpdate() {
+        worker.execute {
+            val release = Updater.check(this) ?: return@execute
+            pendingUpdate = release
+            runOnUiThread {
+                updateText.text = "PocoCast " + release.version + " is ready to install."
+                updateCard.visibility = View.VISIBLE
+            }
+        }
+    }
+
+    private fun startUpdate() {
+        val release = pendingUpdate ?: return
+        updateAction.isEnabled = false
+        updateAction.alpha = 0.55f
+        worker.execute {
+            try {
+                val apk = Updater.download(this, release) { percent ->
+                    runOnUiThread { updateText.text = "Downloading the update… $percent%" }
+                }
+                runOnUiThread {
+                    val opened = Updater.install(this, apk)
+                    updateText.text = if (opened) {
+                        "Finish the install, then reopen PocoCast."
+                    } else {
+                        "Allow PocoCast to install apps, then tap Update again."
+                    }
+                    if (opened) {
+                        updateCard.visibility = View.GONE
+                    } else {
+                        updateAction.isEnabled = true
+                        updateAction.alpha = 1f
+                    }
+                }
+            } catch (t: Throwable) {
+                Diag.log("update: failed " + t.message)
+                runOnUiThread {
+                    updateText.text = "Update failed: " + (t.message ?: t.javaClass.simpleName)
+                    updateAction.isEnabled = true
+                    updateAction.alpha = 1f
+                }
+            }
         }
     }
 
