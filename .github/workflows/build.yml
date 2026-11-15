@@ -1,0 +1,52 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Keeps the debug signing key between runs. Signing keys are random, so
+      # without this every build would have a different one and Android would
+      # refuse to install a new build over the one already on the phone.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: pococast-debug-signing-key
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Assemble debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pococast-debug
+          path: app/build/outputs/apk/debug/*.apk
+
+      # A release asset is what makes the APK downloadable in one tap on the
+      # phone, at a link that never changes; the artifact always arrives as a
+      # zip that has to be unpacked first.
+      - name: Publish the APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view latest >/dev/null 2>&1 || \
+            gh release create latest --title "PocoCast debug build" \
+              --notes "Signed debug APK built from ${GITHUB_SHA:0:7}."
+          gh release upload latest app/build/outputs/apk/debug/app-debug.apk --clobber
