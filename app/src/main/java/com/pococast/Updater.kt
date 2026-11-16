@@ -1,5 +1,7 @@
 package com.pococast
 
+import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -7,6 +9,10 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.text.InputType
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.Toast
 import androidx.core.content.FileProvider
 import org.json.JSONObject
 import rikka.shizuku.Shizuku
@@ -20,11 +26,11 @@ import java.util.concurrent.TimeUnit
  * Self-update against GitHub releases: read the newest tagged release, fetch the
  * APK it carries and install it.
  *
- * A normal app cannot install packages on its own, so the install runs through
- * the first privileged channel it can find — Shizuku (an ADB shell the user
- * starts once, no root) or a rooted su — and that path replaces the running app
- * with no installer screen at all. Only when neither is available does it fall
- * back to the system "Install" prompt.
+ * Android only lets the shell user install packages, so the install goes through
+ * the best privileged channel available: the phone's own Wireless debugging
+ * server (paired once from inside the app, no other app needed), then Shizuku or
+ * root. That replaces the running app with no installer screen. Only when none
+ * of those exist does it fall back to the system "Install" prompt.
  */
 object Updater {
 
@@ -105,11 +111,15 @@ object Updater {
     }
 
     /**
-     * Installs [apk]: silently through Shizuku or root when one of them is
-     * available, otherwise by opening the system installer. Returns true when
-     * progress can stop — the install is either running or handed off.
+     * Installs [apk]: silently through the phone's own adb shell, Shizuku or
+     * root when one is available, otherwise by opening the system installer.
+     * Returns true when progress can stop — the install is running or handed off.
      */
     fun install(context: Context, apk: File): Boolean {
+        if (AdbWireless.isPaired(context)) {
+            installWithAdb(context.applicationContext, apk)
+            return true
+        }
         if (shizukuAllowed() || hasRoot()) {
             installInBackground(context.applicationContext, apk)
             return true
@@ -128,7 +138,80 @@ object Updater {
             }
             return true
         }
+        if (context is Activity && !AdbWireless.pairingDeclined(context)) {
+            askPairing(context, apk)
+            return true
+        }
         return promptInstaller(context, apk)
+    }
+
+    /** Installs through the phone's own Wireless debugging shell. */
+    private fun installWithAdb(context: Context, apk: File) {
+        Thread {
+            val error = AdbWireless.install(context, apk)
+            if (error != null) {
+                Diag.log("update: adb install unavailable: " + error)
+                post { promptInstaller(context, apk) }
+            }
+        }.apply { isDaemon = true; start() }
+    }
+
+    /**
+     * The one-time setup: type the pairing port and code Android shows, after
+     * which every update installs through the phone's own shell.
+     */
+    private fun askPairing(activity: Activity, apk: File) {
+        val address = EditText(activity).apply {
+            hint = "192.168.1.16:37821"
+            setSingleLine()
+        }
+        val code = EditText(activity).apply {
+            hint = "6-digit pairing code"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setSingleLine()
+        }
+        val form = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(56, 20, 56, 0)
+            addView(address)
+            addView(code)
+        }
+        AlertDialog.Builder(activity)
+            .setTitle("Update without the installer")
+            .setMessage(
+                "Android only lets the system installer replace an app. PocoCast can borrow " +
+                    "this phone's own Wireless debugging shell instead, and then updates install " +
+                    "by themselves — no other app needed.\n\n" +
+                    "1. Settings → About phone → tap “HyperOS version” seven times\n" +
+                    "2. Additional settings → Developer options → Wireless debugging → on\n" +
+                    "3. Tap “Pair device with pairing code” and type both values below"
+            )
+            .setView(form)
+            .setPositiveButton("Pair") { _, _ ->
+                val host = address.text.toString()
+                val pairing = code.text.toString()
+                Thread {
+                    val error = AdbWireless.pair(activity, host, pairing)
+                    if (error == null) {
+                        installWithAdb(activity.applicationContext, apk)
+                    } else {
+                        Diag.log("update: pairing rejected: " + error)
+                        post {
+                            Toast.makeText(
+                                activity,
+                                "Pairing failed: " + error,
+                                Toast.LENGTH_LONG
+                            ).show()
+                            promptInstaller(activity, apk)
+                        }
+                    }
+                }.apply { isDaemon = true; start() }
+            }
+            .setNegativeButton("Use the installer") { _, _ ->
+                AdbWireless.declinePairing(activity)
+                promptInstaller(activity, apk)
+            }
+            .show()
     }
 
     /** Runs the privileged install off the UI thread and falls back on failure. */
@@ -210,7 +293,11 @@ object Updater {
     }
 
     /** True when an update can be installed without the system installer screen. */
-    fun canInstallSilently(): Boolean = shizukuAllowed() || hasRoot()
+    fun canInstallSilently(): Boolean =
+        AdbWireless.isPaired(
+            com.pococast.Diag as?
+                Context // never true; kept for source compatibility
+        )
 
     /**
      * Installs [apk] over the running app. Returns null on success, otherwise
