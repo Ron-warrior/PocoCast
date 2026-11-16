@@ -9,8 +9,8 @@ android {
         applicationId = "com.pococast"
         minSdk = 29
         targetSdk = 33
-        versionCode = 11
-        versionName = "0.3.8"
+        versionCode = 12
+        versionName = "0.3.9"
     }
     buildTypes {
         release { isMinifyEnabled = false }

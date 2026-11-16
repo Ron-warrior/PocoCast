@@ -1,7 +1,10 @@
 package com.pococast
 
+import android.content.ContentResolver
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.net.Uri
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
@@ -23,6 +26,8 @@ import java.util.Locale
 object Diag {
 
     private const val TAG = "PocoCast"
+    /** One file, rewritten in place, so Downloads never fills up with copies. */
+    private const val FILE_NAME = "pococast-diag.txt"
     private const val MAX_LINES = 3000
     private const val STAMP = "yyyy-MM-dd HH:mm:ss"
 
@@ -61,36 +66,54 @@ object Diag {
     fun writeReport(context: Context, about: String): File {
         val dir = File(context.getExternalFilesDir(null) ?: context.filesDir, "diagnostics")
         if (!dir.exists()) dir.mkdirs()
-        val name = "pococast-diag-" +
-            SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".txt"
-        val file = File(dir, name)
+        val file = File(dir, FILE_NAME)
         file.writeText(report(context, about))
         return file
     }
 
     /**
      * Copies the report into the phone's Downloads folder through MediaStore,
-     * so it is visible in the Files app without any storage permission.
+     * so it is visible in the Files app without any storage permission. The same
+     * entry is reused every time, so Downloads always holds exactly one file.
      * Returns the visible path, or null if the copy failed.
      */
     fun saveToDownloads(context: Context, file: File): String? = runCatching {
         val resolver = context.contentResolver
+        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val uri = existingDownload(resolver, collection) ?: insertDownload(resolver, collection)
+        resolver.openOutputStream(uri, "wt")?.use { out ->
+            file.inputStream().use { input -> input.copyTo(out) }
+        } ?: return null
+        Environment.DIRECTORY_DOWNLOADS + "/" + FILE_NAME
+    }.getOrNull()
+
+    /** Reuses the entry we created last time instead of adding another copy. */
+    private fun existingDownload(resolver: ContentResolver, collection: Uri): Uri? {
+        val id = resolver.query(
+            collection,
+            arrayOf(MediaStore.Downloads._ID),
+            MediaStore.Downloads.DISPLAY_NAME + "=? AND " +
+                MediaStore.Downloads.RELATIVE_PATH + "=?",
+            arrayOf(FILE_NAME, Environment.DIRECTORY_DOWNLOADS + "/"),
+            null
+        )?.use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null } ?: return null
+        return ContentUris.withAppendedId(collection, id)
+    }
+
+    private fun insertDownload(resolver: ContentResolver, collection: Uri): Uri {
         val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, file.name)
+            put(MediaStore.Downloads.DISPLAY_NAME, FILE_NAME)
             put(MediaStore.Downloads.MIME_TYPE, "text/plain")
             put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
             put(MediaStore.Downloads.IS_PENDING, 1)
         }
-        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        val uri = resolver.insert(collection, values) ?: return null
-        resolver.openOutputStream(uri)?.use { out ->
-            file.inputStream().use { input -> input.copyTo(out) }
-        } ?: return null
+        val uri = resolver.insert(collection, values)
+            ?: throw IllegalStateException("Downloads is not writable")
         values.clear()
         values.put(MediaStore.Downloads.IS_PENDING, 0)
         resolver.update(uri, values, null, null)
-        Environment.DIRECTORY_DOWNLOADS + "/" + file.name
-    }.getOrNull()
+        return uri
+    }
 
     // ---- report ----
 
