@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">PocoCast</string>
+    <string name="shortcut_extras">Extras</string>
+    <string name="shortcut_extras_long">PocoCast extras and switches</string>
+    <string name="shortcut_cast">Cast</string>
+    <string name="shortcut_cast_long">Open PocoCast and pick a TV</string>
+    <string name="settings_title">Extras</string>
 </resources>

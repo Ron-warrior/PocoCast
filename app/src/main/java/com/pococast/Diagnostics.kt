@@ -53,6 +53,9 @@ object Diag {
         android.util.Log.i(TAG, message)
     }
 
+    /** The step trace on its own, used by the crash report. */
+    fun trace(): String = synchronized(lock) { lines.joinToString("\n") }
+
     fun error(message: String, cause: Throwable? = null) {
         log("ERROR $message" + (cause?.let { " -- " + it.javaClass.name + ": " + it.message } ?: ""))
         if (cause != null) {
@@ -73,36 +76,40 @@ object Diag {
 
     /**
      * Copies the report into the phone's Downloads folder through MediaStore,
-     * so it is visible in the Files app without any storage permission. The same
-     * entry is reused every time, so Downloads always holds exactly one file.
+     * so it is visible in the Files app without any storage permission.
      * Returns the visible path, or null if the copy failed.
      */
-    fun saveToDownloads(context: Context, file: File): String? = runCatching {
+    fun saveToDownloads(
+        context: Context,
+        file: File,
+        name: String = FILE_NAME
+    ): String? = runCatching {
         val resolver = context.contentResolver
         val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        val uri = existingDownload(resolver, collection) ?: insertDownload(resolver, collection)
+        val uri = existingDownload(resolver, collection, name)
+            ?: insertDownload(resolver, collection, name)
         resolver.openOutputStream(uri, "wt")?.use { out ->
             file.inputStream().use { input -> input.copyTo(out) }
         } ?: return null
-        Environment.DIRECTORY_DOWNLOADS + "/" + FILE_NAME
+        Environment.DIRECTORY_DOWNLOADS + "/" + name
     }.getOrNull()
 
     /** Reuses the entry we created last time instead of adding another copy. */
-    private fun existingDownload(resolver: ContentResolver, collection: Uri): Uri? {
+    private fun existingDownload(resolver: ContentResolver, collection: Uri, name: String): Uri? {
         val id = resolver.query(
             collection,
             arrayOf(MediaStore.Downloads._ID),
             MediaStore.Downloads.DISPLAY_NAME + "=? AND " +
                 MediaStore.Downloads.RELATIVE_PATH + "=?",
-            arrayOf(FILE_NAME, Environment.DIRECTORY_DOWNLOADS + "/"),
+            arrayOf(name, Environment.DIRECTORY_DOWNLOADS + "/"),
             null
         )?.use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null } ?: return null
         return ContentUris.withAppendedId(collection, id)
     }
 
-    private fun insertDownload(resolver: ContentResolver, collection: Uri): Uri {
+    private fun insertDownload(resolver: ContentResolver, collection: Uri, name: String): Uri {
         val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, FILE_NAME)
+            put(MediaStore.Downloads.DISPLAY_NAME, name)
             put(MediaStore.Downloads.MIME_TYPE, "text/plain")
             put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
             put(MediaStore.Downloads.IS_PENDING, 1)
@@ -122,12 +129,16 @@ object Diag {
         out.appendLine("PocoCast diagnostics")
         out.appendLine("generated: " + SimpleDateFormat(STAMP, Locale.US).format(Date()))
         out.appendLine("app: " + versionOf(context))
-        out.appendLine(
-            "device: " + Build.MANUFACTURER + " " + Build.MODEL +
-                " / Android " + Build.VERSION.RELEASE + " (SDK " + Build.VERSION.SDK_INT + ")"
-        )
-        out.appendLine("abis: " + Build.SUPPORTED_ABIS.joinToString())
-        out.appendLine("network: " + network(context))
+        if (Prefs.isOn(context, "diag.device_info")) {
+            out.appendLine(
+                "device: " + Build.MANUFACTURER + " " + Build.MODEL +
+                    " / Android " + Build.VERSION.RELEASE + " (SDK " + Build.VERSION.SDK_INT + ")"
+            )
+            out.appendLine("abis: " + Build.SUPPORTED_ABIS.joinToString())
+            out.appendLine("network: " + network(context))
+        } else {
+            out.appendLine("device details omitted (switch them on in Extras)")
+        }
         out.appendLine("interfaces: " + interfaces())
         out.appendLine()
         out.appendLine("== cast context ==")
@@ -140,9 +151,14 @@ object Diag {
             out.appendLine("== exceptions ==")
             synchronized(lock) { stacks.forEach { out.appendLine(it); out.appendLine() } }
         }
-        out.appendLine("== logcat (this process; AirPlay SETUP//command statuses live here) ==")
-        out.appendLine(logcat())
-        return redact(out.toString())
+        if (Prefs.isOn(context, "diag.logcat")) {
+            out.appendLine("== logcat (this process; AirPlay SETUP//command statuses live here) ==")
+            out.appendLine(logcat())
+        } else {
+            out.appendLine("== logcat omitted (switch it on in Extras) ==")
+        }
+        val text = out.toString()
+        return if (Prefs.isOn(context, "diag.redact")) redact(text) else text
     }
 
     private fun versionOf(context: Context): String = runCatching {

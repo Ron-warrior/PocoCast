@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="extras"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_extras"
+        android:shortcutLongLabel="@string/shortcut_extras_long">
+        <intent
+            android:action="android.intent.action.MAIN"
+            android:targetPackage="com.pococast"
+            android:targetClass="com.pococast.SettingsActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="cast"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_cast"
+        android:shortcutLongLabel="@string/shortcut_cast_long">
+        <intent
+            android:action="android.intent.action.MAIN"
+            android:targetPackage="com.pococast"
+            android:targetClass="com.pococast.MainActivity" />
+    </shortcut>
+</shortcuts>
