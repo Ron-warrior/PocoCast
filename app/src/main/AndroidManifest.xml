@@ -27,6 +27,14 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+        <!-- Receives the Shizuku binder so updates can install through the ADB shell. -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.files"

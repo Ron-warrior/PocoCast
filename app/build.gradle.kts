@@ -4,13 +4,13 @@ plugins {
 }
 android {
     namespace = "com.pococast"
-    compileSdk = 33
+    compileSdk = 34
     defaultConfig {
         applicationId = "com.pococast"
         minSdk = 29
         targetSdk = 33
-        versionCode = 12
-        versionName = "0.3.9"
+        versionCode = 13
+        versionName = "0.4.0"
     }
     buildTypes {
         release { isMinifyEnabled = false }
@@ -25,6 +25,9 @@ android {
 dependencies {
     implementation(project(":sender"))
     implementation("androidx.core:core-ktx:1.10.1")
+    // Silently installs its own updates through the user's Shizuku (ADB shell).
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.5") {
         exclude(group = "org.mozilla", module = "rhino")
