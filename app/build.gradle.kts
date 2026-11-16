@@ -9,11 +9,27 @@ android {
         applicationId = "com.pococast"
         minSdk = 29
         targetSdk = 33
-        versionCode = 14
-        versionName = "0.4.1"
+        versionCode = 15
+        versionName = "0.4.2"
+    }
+    // Release builds are signed with the same key previous builds used, so the
+    // installed app can still be replaced instead of uninstalled first.
+    signingConfigs {
+        create("shared") {
+            storeFile = File(System.getProperty("user.home"), ".android/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
     buildTypes {
-        release { isMinifyEnabled = false }
+        release {
+            // A debuggable APK is the main thing Play Protect flags as unsafe, so
+            // the shipped build must never be one.
+            isDebuggable = false
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("shared")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11

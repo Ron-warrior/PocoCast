@@ -24,25 +24,38 @@ jobs:
       - name: Fetch the sender library
         run: bash scripts/bootstrap.sh
 
-      # Keeps the debug signing key between runs. Signing keys are random, so
-      # without this every build would have a different one and Android would
-      # refuse to install a new build over the one already on the phone.
+      # Keeps the signing key between runs. Without this every build would have a
+      # different key and Android would refuse to install a new build over the
+      # one already on the phone.
       - uses: actions/cache@v4
         with:
           path: ~/.android/debug.keystore
           key: pococast-debug-signing-key
 
-      - name: Assemble debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+      - name: Keep one signing key
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkeypair -keystore ~/.android/debug.keystore \
+              -storepass android -keypass android -alias androiddebugkey \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -keyalg RSA -keysize 2048 -validity 10000
+          fi
+
+      # A release build, not a debug one: debuggable APKs are what Play Protect
+      # treats as unsafe, and the release variant is signed with the same key so
+      # updates still install over the copy already on the phone.
+      - name: Assemble release APK
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
 
       - uses: actions/upload-artifact@v4
         with:
-          name: pococast-debug
-          path: app/build/outputs/apk/debug/*.apk
+          name: pococast-release
+          path: app/build/outputs/apk/release/*.apk
 
       # One release per version. The asset carries the version in its name so
-      # the phone's Downloads folder shows PocoCast-0.3.4.apk instead of a
-      # pile of app-debug (1).apk files.
+      # the phone's Downloads folder shows PocoCast-0.4.2.apk instead of a
+      # pile of app-release (1).apk files.
       - name: Publish the APK
         env:
           GH_TOKEN: ${{ github.token }}
@@ -51,9 +64,9 @@ jobs:
           version="$(grep -m1 '^ *versionName = ' app/build.gradle.kts | sed 's/.*"\(.*\)".*/\1/')"
           if [ -z "$version" ]; then echo "no versionName in app/build.gradle.kts"; exit 1; fi
           asset="PocoCast-${version}.apk"
-          cp app/build/outputs/apk/debug/app-debug.apk "$asset"
+          cp app/build/outputs/apk/release/app-release.apk "$asset"
           gh release view "v${version}" >/dev/null 2>&1 || \
             gh release create "v${version}" --title "PocoCast ${version}" \
-              --notes "PocoCast ${version} — signed debug APK built from ${GITHUB_SHA:0:7}."
+              --notes "PocoCast ${version} — signed release APK built from ${GITHUB_SHA:0:7}."
           gh release upload "v${version}" "$asset" --clobber
           echo "Published $asset on release v${version}"

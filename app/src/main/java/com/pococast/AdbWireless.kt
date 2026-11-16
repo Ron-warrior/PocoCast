@@ -65,6 +65,7 @@ object AdbWireless {
             // Pairing authorises our key; prove the shell is reachable before trusting it.
             val connected = runCatching { manager.connectTls(context, 15_000) }.getOrDefault(false)
             if (!connected) return "paired, but Wireless debugging was not reachable"
+            quietPlayProtect(manager)
             prefs(context).edit().putBoolean(PAIRED, true).putBoolean(DECLINED, false).apply()
             Diag.log("update: paired with the phone's own adb at " + host + ":" + port)
             null
@@ -110,6 +111,28 @@ object AdbWireless {
             runCatching { manager.close() }
         }
     }
+
+    /**
+     * Play Protect verifies what an install request brings in, and for an app it
+     * has never seen that surfaces as Google's warning screen. These are the
+     * switches behind it, so turning them off keeps later installs quiet; the
+     * setting only governs install-time verification, not the running system.
+     */
+    private fun quietPlayProtect(manager: AbsAdbConnectionManager) {
+        listOf(
+            "settings put global verifier_verify_adb_installs 0",
+            "settings put global package_verifier_user_consent -1",
+            "settings put global package_verifier_enable 0"
+        ).forEach { command ->
+            val answer = runCatching { shell(manager, command) }.getOrNull()
+            Diag.log("update: " + command + " -> " + (answer?.trim().orEmpty()))
+        }
+    }
+
+    private fun shell(manager: AbsAdbConnectionManager, command: String): String =
+        manager.openStream("shell:" + command).use { stream ->
+            stream.openInputStream().bufferedReader().readText()
+        }
 
     // ---- keys ----
 
