@@ -9,8 +9,8 @@ android {
         applicationId = "com.pococast"
         minSdk = 29
         targetSdk = 33
-        versionCode = 13
-        versionName = "0.4.0"
+        versionCode = 14
+        versionName = "0.4.1"
     }
     buildTypes {
         release { isMinifyEnabled = false }
@@ -28,6 +28,14 @@ dependencies {
     // Silently installs its own updates through the user's Shizuku (ADB shell).
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
+    // Speaks the phone's own Wireless debugging protocol, so updates can install
+    // themselves with nothing but this app on the phone.
+    implementation("com.github.MuntashirAkon:libadb-android:2.2.2") {
+        exclude(group = "org.bouncycastle", module = "bcprov-jdk15on")
+    }
+    implementation("org.bouncycastle:bcprov-jdk15to18:1.76")
+    implementation("org.bouncycastle:bcpkix-jdk15to18:1.76")
+    implementation("org.conscrypt:conscrypt-android:2.5.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.5") {
         exclude(group = "org.mozilla", module = "rhino")

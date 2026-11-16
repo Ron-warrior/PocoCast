@@ -293,11 +293,7 @@ object Updater {
     }
 
     /** True when an update can be installed without the system installer screen. */
-    fun canInstallSilently(): Boolean =
-        AdbWireless.isPaired(
-            com.pococast.Diag as?
-                Context // never true; kept for source compatibility
-        )
+    fun canInstallSilently(): Boolean = shizukuAllowed() || hasRoot()
 
     /**
      * Installs [apk] over the running app. Returns null on success, otherwise
