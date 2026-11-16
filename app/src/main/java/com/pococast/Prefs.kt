@@ -56,6 +56,21 @@ object Prefs {
             "Saves Download/pococast-crash.txt with the stack trace on the way down.", true
         ),
         Feature(
+            "update.check_launch", "Updates",
+            "Check for updates when PocoCast opens",
+            "Looks for a newer release on launch; off means only the in-app check runs.", true
+        ),
+        Feature(
+            "extra.quickcast", "Shortcuts",
+            "Cast the copied link shortcut",
+            "Adds a long-press shortcut that opens PocoCast with whatever link is on the clipboard.", true
+        ),
+        Feature(
+            "extra.tile", "Shortcuts",
+            "Quick Settings tile",
+            "Shows a PocoCast tile in the pull-down shade for one-tap access.", true
+        ),
+        Feature(
             "extra.tidy_cache", "Housekeeping",
             "Clean old downloads on launch",
             "Deletes cached casts and stale update files every time the app starts.", false

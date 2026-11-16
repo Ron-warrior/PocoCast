@@ -124,7 +124,9 @@ object Diag {
 
     // ---- report ----
 
-    private fun report(context: Context, about: String): String {
+    fun report(context: Context, about: String): String = render(context, about)
+
+    private fun render(context: Context, about: String): String {
         val out = StringBuilder()
         out.appendLine("PocoCast diagnostics")
         out.appendLine("generated: " + SimpleDateFormat(STAMP, Locale.US).format(Date()))

@@ -13,6 +13,7 @@ class PocoCastApp : Application() {
         super.onCreate()
         runCatching { Notify.channel(this) }
         runCatching { CrashGuard.install(this) }
+        if (!Prefs.isOn(this, "update.check_launch")) return
         Thread {
             runCatching { UpdateWatch.run(this) }
         }.apply { isDaemon = true; name = "pococast-update-watch" }.start()

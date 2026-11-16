@@ -9,8 +9,8 @@ android {
         applicationId = "com.pococast"
         minSdk = 29
         targetSdk = 33
-        versionCode = 16
-        versionName = "0.5.0"
+        versionCode = 17
+        versionName = "0.5.1"
     }
     // Release builds are signed with the same key previous builds used, so the
     // installed app can still be replaced instead of uninstalled first.

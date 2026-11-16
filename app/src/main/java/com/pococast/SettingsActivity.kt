@@ -63,6 +63,7 @@ class SettingsActivity : Activity() {
 
         body.addView(sectionLabel("Housekeeping"), matchWrap(top = 26))
         body.addView(action("Save a diagnostics report now") { saveReport() }, matchWrap(top = 8))
+        body.addView(action("Copy the last report to the clipboard") { copyReport() }, matchWrap(top = 8))
         body.addView(action("Clear downloaded update files") { clearUpdates() }, matchWrap(top = 8))
         body.addView(action("Reset every switch to its default") { reset() }, matchWrap(top = 8))
 
@@ -155,9 +156,7 @@ class SettingsActivity : Activity() {
             setOnCheckedChangeListener { _, checked ->
                 Prefs.set(this@SettingsActivity, feature.key, checked)
                 if (checked && feature.key == "update.notify") askNotificationPermission()
-                if (checked && feature.key == "diag.crash") {
-                    CrashGuard.install(this@SettingsActivity)
-                }
+                if (feature.key == "diag.crash" && checked) CrashGuard.install(this@SettingsActivity)
                 updateStatus(feature.title + if (checked) " on" else " off")
             }
         }
@@ -209,8 +208,19 @@ class SettingsActivity : Activity() {
         val path = file?.let { Diag.saveToDownloads(this, it) }
         updateStatus(
             if (path == null) "Could not write the report."
-            else "Saved to " + path
+            else "Saved to $path"
         )
+    }
+
+    private fun copyReport() {
+        val text = runCatching { Diag.report(this, "copied from Extras") }.getOrNull()
+        if (text == null) {
+            updateStatus("Could not build the report.")
+            return
+        }
+        val clipboard = getSystemService(CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+        clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("PocoCast diagnostics", text))
+        updateStatus("Report copied (" + text.length + " characters).")
     }
 
     private fun clearUpdates() {
@@ -243,13 +253,4 @@ class SettingsActivity : Activity() {
     private fun versionName(): String = runCatching {
         packageManager.getPackageInfo(packageName, 0).versionName
     }.getOrDefault("?")
-
-    @Suppress("unused")
-    private fun openLink(url: String) {
-        runCatching {
-            startActivity(
-                Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
-        }
-    }
 }
